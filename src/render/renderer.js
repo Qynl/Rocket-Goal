@@ -485,8 +485,28 @@ export class Renderer {
     this.updateMarkers(game);
     this.updateParticles(dt);
     this.updateCamera(game, dt, view, replay);
+    this.ballScreen = this.projectBall(replay);
     if (this.composer) this.composer.render();
     else this.renderer.render(this.scene, this.camera);
+  }
+
+  /** Where the ball is on screen (normalised -1..1) and whether it is visible — for the HUD's off-screen arrow. */
+  projectBall(replay) {
+    if (replay) return null;
+    const cam = this.camera;
+    cam.updateMatrixWorld();
+    const p = _v.copy(this.ballMesh.position).applyMatrix4(cam.matrixWorldInverse);
+    const behind = p.z > 0; // camera looks down -z
+    const clip = _v2.copy(this.ballMesh.position).project(cam);
+    let x = clip.x;
+    let y = clip.y;
+    if (behind) {
+      x = -x;
+      y = -y;
+    }
+    const onScreen = !behind && Math.abs(x) < 0.97 && Math.abs(y) < 0.95;
+    const dist = Math.hypot(p.x, p.y, p.z);
+    return { x, y, onScreen, behind, dist };
   }
 
   applyCarLive(car, view, dt) {

@@ -577,6 +577,8 @@ export class Game {
       humanBehindBallPct: this.matchStats.humanTime ? this.matchStats.humanBehindBall / this.matchStats.humanTime : 0,
       humanOwnHalfPct: this.matchStats.humanTime ? this.matchStats.humanOwnHalf / this.matchStats.humanTime : 0,
       overtime: this.overtime,
+      forfeited: !!this.forfeited,
+      clock: this.clock,
     };
   }
 }

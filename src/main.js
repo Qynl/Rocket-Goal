@@ -5,6 +5,7 @@ import { HUD } from './ui/hud.js';
 import { Menus } from './ui/menus.js';
 import { Audio } from './audio.js';
 import { Coach } from './coach.js';
+import { QuickChat } from './chat.js';
 import { TEAM_COLORS, TEAM_NAMES } from './constants.js';
 
 class App {
@@ -48,6 +49,11 @@ class App {
       return;
     }
     if (!this.game || this.menus.visible) return;
+    if (code.startsWith('Digit') && this.chat && this.game.config.mode === 'match') {
+      this.chat.humanSay(Number(code.slice(5)));
+      this.audio.ui();
+      return;
+    }
     if (code === 'KeyP') {
       this.renderer.showPrediction = !this.renderer.showPrediction;
       this.hud.addFeed(`Prediction ${this.renderer.showPrediction ? 'on' : 'off'}`);
@@ -66,6 +72,8 @@ class App {
     this.config = { ...config, playerName: this.menus.settings.playerName };
     this.game = new Game(this.config);
     this.coach = new Coach(this.game);
+    this.chat = new QuickChat(this.game, this.hud);
+    this.chat.enabled = this.menus.settings.quickChat !== false;
     this.view.followCar = this.game.human;
     this.view.mode = 'play';
     this.view.snap = true;
@@ -76,9 +84,13 @@ class App {
     this.hud.setVisible(true);
     this.hud.feed.innerHTML = '';
     this.hud.feedItems = [];
+    this.hud.chat.innerHTML = '';
+    this.hud.chatItems = [];
+    this.hud.stats.innerHTML = '';
+    this.hud.statItems = [];
     if (config.mode === 'freeplay') this.hud.addFeed('Free play — <b>T</b> resets the ball', 5);
     if (config.mode === 'drill') this.hud.addFeed(`${this.game.drill.meta.name}: ${this.game.drill.meta.tip}`, 8);
-    if (config.mode === 'match') this.hud.addFeed(`${config.teamSize}v${config.teamSize} vs ${this.game.bots[0]?.skill.name || 'bots'}`, 4);
+    if (config.mode === 'match') this.hud.addFeed(`${config.teamSize}v${config.teamSize} vs ${this.game.bots[0]?.skill.name || 'bots'} · <b>1–4</b> quick chat`, 4);
     this.running = true;
   }
 
@@ -197,6 +209,17 @@ class App {
     localStorage.setItem('rocketgoal.matches', JSON.stringify(list));
   }
 
+  /** Concede the match: RL-style forfeit ends the game immediately with the results screen. */
+  forfeit() {
+    const g = this.game;
+    if (!g || g.state === 'ended') return this.quitToMenu();
+    if (g.human && g.score[g.human.team] >= g.score[1 - g.human.team]) g.score[1 - g.human.team] = g.score[g.human.team] + 1;
+    g.forfeited = true;
+    this.menus.hide();
+    g.paused = false;
+    g.endMatch();
+  }
+
   togglePause() {
     if (!this.game || this.game.state === 'ended') return;
     if (this.menus.visible) this.resume();
@@ -268,6 +291,7 @@ class App {
       }
       this.renderer.update(g, dt, this.view);
       this.view.snap = false;
+      this.view.ballScreen = this.renderer.ballScreen;
       this.hud.update(g, dt, this.input, this.view);
       this.audio.updateEngine(g.human, dt);
       this.playCarSounds(g);

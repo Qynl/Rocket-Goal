@@ -27,4 +27,17 @@ try {
   r.update({ ball: g.ball, cars: [], pads: g.pads, prediction: [], drill: null }, 1/60, { followCar: null, mode: 'goalReplay', ballCam: true });
 } catch (e) { err = e; }
 console.log('frames rendered', stub.rendered, 'car meshes', r.carMeshes.size, 'particles', r.particles.length, 'cam', r.camera.position.toArray().map(v=>v.toFixed(0)).join(','), 'err', err ? err.stack.split('\n').slice(0,4).join(' | ') : 'none');
+// off-screen ball projection sanity: ball ahead of a car-cam follow => on screen; ball behind the camera => flagged behind
+{
+  const g2 = new Game({ mode: 'freeplay', humanTeam: 0 });
+  const v2 = { followCar: g2.human, mode: 'play', ballCam: false, snap: true };
+  g2.ball.pos.set(0, 93, 1500); g2.human.setPose(0, -1000, 0, 33);
+  for (let i = 0; i < 60; i++) r.update(g2, 1/60, v2);
+  const a = r.ballScreen;
+  g2.ball.pos.set(0, 93, -3000);
+  for (let i = 0; i < 60; i++) r.update(g2, 1/60, v2);
+  const b = r.ballScreen;
+  console.log('ballScreen ahead', a && `x=${a.x.toFixed(2)} y=${a.y.toFixed(2)} on=${a.onScreen}`, '| behind', b && `x=${b.x.toFixed(2)} y=${b.y.toFixed(2)} on=${b.onScreen} behind=${b.behind}`);
+  if (!a || !a.onScreen || !b || b.onScreen || !b.behind) { console.log('BALL SCREEN CHECK FAILED'); err = err || new Error('ballScreen'); }
+}
 process.exit(err ? 1 : 0);

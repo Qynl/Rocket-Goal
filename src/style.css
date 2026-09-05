@@ -903,3 +903,81 @@ table.stats tr.me td {
   letter-spacing: 0.1em;
   vertical-align: middle;
 }
+
+/* ---- off-screen ball arrow ---- */
+.ball-arrow {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 54px;
+  height: 54px;
+  pointer-events: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.ball-arrow i {
+  position: absolute;
+  inset: 0;
+  display: block;
+  border-radius: 50%;
+  border: 2px solid rgba(255, 255, 255, 0.55);
+  background: radial-gradient(circle, rgba(255, 255, 255, 0.28), rgba(255, 255, 255, 0.04) 70%);
+}
+.ball-arrow i::after {
+  content: '';
+  position: absolute;
+  right: -14px;
+  top: 50%;
+  transform: translateY(-50%);
+  border-left: 14px solid #fff;
+  border-top: 9px solid transparent;
+  border-bottom: 9px solid transparent;
+  filter: drop-shadow(0 0 4px rgba(0, 0, 0, 0.6));
+}
+.ball-arrow span {
+  position: relative;
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  color: #fff;
+  text-shadow: 0 1px 3px #000;
+}
+
+/* ---- quick chat ---- */
+.chat {
+  position: absolute;
+  left: 30px;
+  top: 110px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 17px;
+  pointer-events: none;
+}
+.chat .line {
+  background: rgba(6, 10, 22, 0.75);
+  border-radius: 6px;
+  padding: 4px 12px;
+  animation: slideInL 0.2s ease-out;
+  letter-spacing: 0.03em;
+}
+.chat .line b {
+  margin-right: 6px;
+}
+.chat .line b.blue {
+  color: #7fb3ff;
+}
+.chat .line b.orange {
+  color: #ffb066;
+}
+@keyframes slideInL {
+  from {
+    transform: translateX(-30px);
+    opacity: 0;
+  }
+  to {
+    transform: none;
+    opacity: 1;
+  }
+}

@@ -20,7 +20,7 @@ Works with keyboard + mouse or any gamepad (Xbox/PlayStation layouts). Two keybo
 
 **Bots** — four difficulty levels: *Rookie*, *Pro*, *All-Star*, *Champion*. Bots read a ball-prediction, choose roles (attack / shadow / save / boost) with teammates, take varied kickoffs (side-hits, diagonal flips, Champion speed-flips), defend rolling balls toward their own net, drive walls, jump-shot, dodge, and aerial. All-Star and Champion are meant to punish slow rotations and whiffs; Rookie and Pro make human-like reading and timing mistakes.
 
-**Presentation** — stadium arena with lit goals, boost pad glow, car models with wheels/boost trails/supersonic effects, goal explosions and slow-motion replays with a cinematic camera, ball-cam / free-cam with RL-style camera settings (FOV, distance, height, stiffness), engine/boost/impact audio, and a full HUD (boost gauge, speed, score, clock, kill feed, RL-style stat pop-ups — "+50 SAVE", "+75 EPIC SAVE", "+20 CLEAR BALL" —, hold-Tab scoreboard and an MVP on the results screen).
+**Presentation** — stadium arena with lit goals, boost pad glow, car models with wheels/boost trails/supersonic effects, goal explosions and slow-motion replays with a cinematic camera, ball-cam / free-cam with RL-style camera settings (FOV, distance, height, stiffness), engine/boost/impact audio, and a full HUD (boost gauge, speed, score, clock, kill feed, RL-style stat pop-ups — "+50 SAVE", "+75 EPIC SAVE", "+20 CLEAR BALL" —, hold-Tab scoreboard, an MVP on the results screen, an off-screen ball indicator in car cam, and quick chat — bots say "What a save!" / "Sorry!" / "Nice shot!" at the right moments and answer yours). Forfeit from the pause menu.
 
 **Modes**
 - **Match** — 1v1 / 2v2 / 3v3 vs bots, with or without bot teammates, 5-minute (configurable) games, overtime, replays, boost management.
@@ -41,6 +41,7 @@ Works with keyboard + mouse or any gamepad (Xbox/PlayStation layouts). Two keybo
 | Air roll left / right | Q / E |
 | Ball cam | C |
 | Scoreboard (hold) | Tab |
+| Quick chat | 1 – 4 |
 | Rear view | R |
 | Pause | Esc |
 

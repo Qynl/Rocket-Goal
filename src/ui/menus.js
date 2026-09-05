@@ -382,6 +382,11 @@ export class Menus {
           grid.appendChild(this.toggle(s.replays !== false, (v) => (s.replays = v)));
           grid.appendChild(el('div', '', 'Live coach tips during matches'));
           grid.appendChild(this.toggle(s.coach, (v) => (s.coach = v)));
+          grid.appendChild(el('div', '', 'Quick chat (bots react; you send with 1–4)'));
+          grid.appendChild(this.toggle(s.quickChat !== false, (v) => {
+            s.quickChat = v;
+            if (this.app.chat) this.app.chat.enabled = v;
+          }));
           grid.appendChild(el('div', '', 'Ball prediction line (training aid, toggle with P)'));
           grid.appendChild(this.toggle(s.showPrediction, (v) => {
             s.showPrediction = v;
@@ -493,8 +498,12 @@ export class Menus {
       restart.onclick = () => this.app.restart();
       const settings = el('button', '', 'Settings');
       settings.onclick = () => this.settingsScreen(true);
-      const quit = el('button', 'danger', 'Quit to menu');
-      quit.onclick = () => this.app.quitToMenu();
+      const g0 = this.app.game;
+      const quit = el('button', 'danger', g0 && g0.config.mode === 'match' && g0.state !== 'ended' ? 'Forfeit' : 'Quit to menu');
+      quit.onclick = () => {
+        if (g0 && g0.config.mode === 'match' && g0.state !== 'ended') this.app.forfeit();
+        else this.app.quitToMenu();
+      };
       col.append(resume, restart, settings, quit);
       p.appendChild(col);
       const g = this.app.game;
@@ -528,7 +537,7 @@ export class Menus {
       const h = stats.cars.find((c) => c.isHuman);
       const won = h && stats.score[h.team] > stats.score[1 - h.team];
       const draw = stats.score[0] === stats.score[1];
-      p.innerHTML = `<h2 style="color:${won ? 'var(--good)' : draw ? 'var(--muted)' : 'var(--danger)'}">${won ? 'Victory' : draw ? 'Draw' : 'Defeat'} <span class="muted" style="font-size:20px">${stats.score[0]} – ${stats.score[1]}${stats.overtime ? ' (OT)' : ''}</span></h2>`;
+      p.innerHTML = `<h2 style="color:${won ? 'var(--good)' : draw ? 'var(--muted)' : 'var(--danger)'}">${won ? 'Victory' : draw ? 'Draw' : stats.forfeited ? 'Forfeit' : 'Defeat'} <span class="muted" style="font-size:20px">${stats.score[0]} – ${stats.score[1]}${stats.overtime ? ' (OT)' : ''}</span></h2>`;
       // MVP: top scorer on the winning team (RL rule); on a draw, the top scorer overall
       const winTeam = draw ? -1 : stats.score[0] > stats.score[1] ? 0 : 1;
       const mvp = stats.cars

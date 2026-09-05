@@ -1,5 +1,9 @@
 import { ARENA, TEAM, TEAM_NAMES, CAR } from '../constants.js';
 
+function game_active(view) {
+  return !view || view.mode !== 'goalReplay';
+}
+
 function el(tag, cls, html) {
   const e = document.createElement(tag);
   if (cls) e.className = cls;
@@ -58,6 +62,15 @@ export class HUD {
     this.root.appendChild(this.board);
     this.boardVisible = false;
 
+    // quick chat log (top-left, under the scoreboard)
+    this.chat = el('div', 'chat');
+    this.root.appendChild(this.chat);
+    this.chatItems = [];
+
+    // off-screen ball arrow (like RL's ball indicator in car cam)
+    this.ballArrow = el('div', 'ball-arrow hidden', `<i></i><span></span>`);
+    this.root.appendChild(this.ballArrow);
+
     this.minimap = document.createElement('canvas');
     this.minimap.className = 'minimap';
     this.minimap.width = 180 * 2;
@@ -99,6 +112,13 @@ export class HUD {
     this.stats.appendChild(item);
     this.statItems.push({ item, t: seconds });
     while (this.statItems.length > 4) this.statItems.shift().item.remove();
+  }
+
+  addChat(name, team, text, seconds = 5) {
+    const item = el('div', 'line', `<b class="${team === 0 ? 'blue' : 'orange'}">${name}</b> ${text}`);
+    this.chat.appendChild(item);
+    this.chatItems.push({ item, t: seconds });
+    while (this.chatItems.length > 4) this.chatItems.shift().item.remove();
   }
 
   setBoard(on, game) {
@@ -181,6 +201,15 @@ export class HUD {
       this.coachTimer -= dt;
       if (this.coachTimer <= 0) this.coach.classList.add('hidden');
     }
+    // chat lines
+    for (let i = this.chatItems.length - 1; i >= 0; i--) {
+      const f = this.chatItems[i];
+      f.t -= dt;
+      if (f.t <= 0) {
+        f.item.remove();
+        this.chatItems.splice(i, 1);
+      } else if (f.t < 0.6) f.item.style.opacity = f.t / 0.6;
+    }
     // stat pop-ups
     for (let i = this.statItems.length - 1; i >= 0; i--) {
       const f = this.statItems[i];
@@ -208,7 +237,32 @@ export class HUD {
       this.drillHud.innerHTML = `<h3>${d.meta.icon} ${d.meta.name}</h3>${lines.map((l) => `<div>${l}</div>`).join('')}<div class="acc"><i style="width:${Math.round(d.accuracy * 100)}%"></i></div>${d.messageTimer > 0 ? `<div style="color:var(--accent);margin-top:6px">${d.message}</div>` : ''}`;
     } else this.drillHud.classList.add('hidden');
 
+    this.updateBallArrow(view, human);
     this.drawMinimap(game);
+  }
+
+  updateBallArrow(view, human) {
+    const bs = view && view.ballScreen;
+    const show = bs && !bs.onScreen && human && game_active(view);
+    this.ballArrow.classList.toggle('hidden', !show);
+    if (!show) return;
+    // clamp the direction to an ellipse inset from the screen edge
+    const W = this.root.clientWidth || window.innerWidth;
+    const H = this.root.clientHeight || window.innerHeight;
+    let dx = bs.x;
+    let dy = -bs.y; // screen y down
+    if (bs.behind) dy = Math.abs(dy) < 0.05 ? 1 : dy; // behind & centred => straight down
+    const len = Math.hypot(dx, dy) || 1;
+    dx /= len;
+    dy /= len;
+    const rx = W * 0.5 - 70;
+    const ry = H * 0.5 - 70;
+    const px = W * 0.5 + dx * rx;
+    const py = H * 0.5 + dy * ry;
+    const ang = (Math.atan2(dy, dx) * 180) / Math.PI;
+    this.ballArrow.style.transform = `translate(${px}px, ${py}px) translate(-50%, -50%)`;
+    this.ballArrow.querySelector('i').style.transform = `rotate(${ang}deg)`;
+    this.ballArrow.querySelector('span').textContent = `${Math.round(bs.dist / 100) / 10}k`;
   }
 
   drawMinimap(game) {

@@ -11,6 +11,7 @@ const { Game } = await import('../src/game.js');
 const { HUD } = await import('../src/ui/hud.js');
 const { Menus } = await import('../src/ui/menus.js');
 const { Input } = await import('../src/input.js');
+const { QuickChat } = await import('../src/chat.js');
 const { Coach } = await import('../src/coach.js');
 const canvas = document.getElementById('game');
 const input = new Input(canvas);
@@ -39,5 +40,24 @@ tryit('hud update + game + coach', () => {
 });
 tryit('drill hud + summary', () => { const g = new Game({ mode: 'drill', drill: 'dribbling', level: 1, humanTeam: 0, teamSize: 1, difficulty: 'champion', drillBots: false }); for (let i = 0; i < 300; i++) { g.update(1/60); hud.update(g, 1/60, input, { ballCam: true }); } g.drill.finishAttempt(false, 'x'); menus.drillSummary(g.drill, { mode: 'drill', drill: 'dribbling' }); });
 tryit('kickoff drill hud', () => { const g = new Game({ mode: 'drill', drill: 'kickoffs', level: 1, humanTeam: 1, teamSize: 1, difficulty: 'champion', drillBots: true }); for (let i = 0; i < 600; i++) { g.update(1/60); hud.update(g, 1/60, input, { ballCam: true }); } });
+tryit('quick chat + scoreboard + stat pops + ball arrow', () => {
+  const g = new Game({ mode: 'match', teamSize: 2, difficulty: 'allstar', duration: 60, humanTeam: 0 });
+  const chat = new QuickChat(g, hud);
+  chat.humanSay(1); chat.humanSay(2);
+  if (hud.chatItems.length < 1) throw new Error('no chat line');
+  hud.addStat('SAVE', 50, true); hud.addStat('EPIC SAVE', 75, false);
+  if (document.querySelectorAll('.stat-pops .pop').length !== 2) throw new Error('stat pops');
+  hud.setBoard(true, g);
+  if (document.querySelectorAll('.board tr').length < 5) throw new Error('board rows');
+  hud.setBoard(false, g);
+  if (!hud.board.classList.contains('hidden')) throw new Error('board hide');
+  for (let i = 0; i < 120; i++) { g.update(1/60); hud.update(g, 1/60, input, { ballCam: false, mode: 'play', ballScreen: { x: 1.4, y: 0.2, onScreen: false, behind: false, dist: 3000 } }); }
+  if (hud.ballArrow.classList.contains('hidden')) throw new Error('ball arrow hidden');
+  hud.update(g, 1/60, input, { ballCam: false, mode: 'play', ballScreen: { x: 0, y: 0, onScreen: true, behind: false, dist: 300 } });
+  if (!hud.ballArrow.classList.contains('hidden')) throw new Error('ball arrow shown on-screen');
+  // emit events so bots react
+  g.emit('goal', { team: 1, scorer: g.bots[0].car, ownGoal: false, speed: 2500 });
+  g.emit('save', { car: g.human, epic: true });
+});
 console.log(errors.length ? `FAILED: ${errors.join(', ')}` : 'ALL UI TESTS PASSED');
 process.exit(errors.length ? 1 : 0);
