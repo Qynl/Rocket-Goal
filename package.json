@@ -1,0 +1,17 @@
+{
+  "name": "rocket-goal",
+  "version": "1.0.0",
+  "description": "Offline Rocket League-style car soccer trainer with skilled bots and training drills",
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 0.0.0.0",
+    "build": "vite build",
+    "preview": "vite preview --host 0.0.0.0"
+  },
+  "dependencies": {
+    "three": "^0.170.0"
+  },
+  "devDependencies": {
+    "vite": "^5.4.0"
+  }
+}
