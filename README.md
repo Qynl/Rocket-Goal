@@ -2,7 +2,7 @@
 
 A local, offline Rocket League–style car-soccer game built for **training**: skilled bots to play against, focused drills for the mechanics that matter, and a coach that tells you what to fix.
 
-Runs entirely in the browser (Three.js + Vite). No servers, no accounts, no network needed after `npm install`.
+Runs entirely in the browser (**React + Three.js + Vite**). No servers, no accounts, no network needed after `npm install`.
 
 ## Quick start
 
@@ -16,7 +16,7 @@ Works with keyboard + mouse or any gamepad (Xbox/PlayStation layouts). Two keybo
 
 ## What's inside
 
-**Physics** — Rocket League units and field layout (Octane hitbox, 34 boost pads, 5-spawn kickoffs, RL gravity/ball/car constants). Jumps, double jumps, dodges, flip cancels (speed flips), air roll, powerslide, wall and ceiling driving with speed preserved through the curved ramps, wavedashes, demolitions, Psyonix hit impulse, supersonic. Fixed 120 Hz sim, boost locked during the countdown exactly like RL.
+**Physics** — Rocket League units and field layout (Octane hitbox, 34 boost pads, 5-spawn kickoffs, RL gravity/ball/car constants). Jumps, double jumps, dodges, flip cancels (speed flips), air roll, free air roll (powerslide key + steer — now with correct A/D directions), powerslide, wall and ceiling driving with speed preserved through the curved ramps, wavedashes, demolitions, Psyonix hit impulse, supersonic. Fixed 120 Hz sim, boost locked during the countdown exactly like RL. Ball-cam lifts and pulls back as the ball climbs so high aerials stay framed.
 
 **Bots** — four difficulty levels: *Rookie*, *Pro*, *All-Star*, *Champion*. Bots read a ball-prediction, choose roles (attack / shadow / save / boost) with teammates, take varied kickoffs (side-hits, diagonal flips, Champion speed-flips), defend rolling balls toward their own net, drive walls, jump-shot, dodge, and aerial. All-Star and Champion are meant to punish slow rotations and whiffs; Rookie and Pro make human-like reading and timing mistakes.
 
@@ -24,7 +24,7 @@ Works with keyboard + mouse or any gamepad (Xbox/PlayStation layouts). Two keybo
 
 **Modes**
 - **Match** — 1v1 / 2v2 / 3v3 vs bots, with or without bot teammates, 5-minute (configurable) games, overtime, replays, boost management.
-- **Training drills** — Shooting, Saves, Aerials, Dribbling, Kickoffs, Wall shots, Recovery. Each drill has levels that unlock as you succeed and gives feedback after every attempt.
+- **Training drills** — Shooting, Saves, Aerials, Dribbling, Kickoffs, Wall shots, Recovery. Each drill has levels that unlock as you succeed and gives feedback after every attempt. The **Aerials** pack covers straight lobs, side aerials, drifting balls and ceiling drop shots, auto-enables the ball landing marker, and reports touch height / air time / boost left.
 - **Progress** — per-drill best scores and streaks, match record, and the coach's notes are saved locally.
 
 **Coach** — watches your match and reports concrete things to work on (boost starvation, slow rotations, whiffed challenges, kickoffs lost, etc.).
@@ -39,6 +39,7 @@ Works with keyboard + mouse or any gamepad (Xbox/PlayStation layouts). Two keybo
 | Boost | Shift |
 | Powerslide / Air roll | Ctrl or F |
 | Air roll left / right | Q / E |
+| Free air roll (hold) + steer | Ctrl/Shift + A/D — A rolls left, D rolls right |
 | Ball cam | C |
 | Scoreboard (hold) | Tab |
 | Quick chat | 1 – 4 |

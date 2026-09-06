@@ -6,7 +6,21 @@ globalThis.window = w; globalThis.document = w.document; globalThis.localStorage
 Object.defineProperty(globalThis, "navigator", { value: w.navigator, configurable: true });
 globalThis.HTMLElement = w.HTMLElement; globalThis.performance = w.performance; globalThis.devicePixelRatio = 1;
 w.HTMLCanvasElement.prototype.getContext = function (type) {
-  if (type === '2d') return new Proxy({}, { get: (t, k) => (k === 'measureText' ? () => ({ width: 10 }) : k === 'getImageData' ? () => ({ data: new Uint8ClampedArray(4 * 1024 * 1024) }) : () => {}), set: () => true });
+  if (type === '2d')
+    return new Proxy(
+      {},
+      {
+        get: (t, k) =>
+          k === 'measureText'
+            ? () => ({ width: 10 })
+            : k === 'getImageData'
+              ? () => ({ data: new Uint8ClampedArray(4 * 1024 * 1024) })
+              : k === 'createLinearGradient' || k === 'createRadialGradient'
+                ? () => ({ addColorStop() {} })
+                : () => {},
+        set: () => true,
+      }
+    );
   return null;
 };
 globalThis.HTMLCanvasElement = w.HTMLCanvasElement;

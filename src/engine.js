@@ -144,6 +144,7 @@ export class Engine {
     g.on('go', () => this.audio.countdown(0));
     g.on('touch', (e) => {
       this.audio.ballHit(e.speed, e.car === g.human);
+      this.renderer.ballTouch(e.speed);
       if (e.car === g.human && e.speed > 1200) this.renderer.kick(Math.min(16, e.speed / 180));
       if (e.speed > 1800) this.renderer.burst(g.ball.pos, 0xffffff, Math.min(20, e.speed / 150), 500, 0.35, 18);
     });
