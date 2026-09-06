@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer.js';
 import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js';
+import { ShaderPass } from 'three/examples/jsm/postprocessing/ShaderPass.js';
 import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
 import { buildArena } from './arenaMesh.js';
 import { buildCarMesh } from './carMesh.js';
@@ -15,6 +16,7 @@ const _v4 = new THREE.Vector3();
 const _q = new THREE.Quaternion();
 const _q2 = new THREE.Quaternion();
 const _m = new THREE.Matrix4();
+const _c = new THREE.Color();
 
 // Rocket League camera presets (RL units / degrees)
 export const CAMERA_PRESETS = {
@@ -23,38 +25,78 @@ export const CAMERA_PRESETS = {
   wide: { fov: 110, distance: 300, height: 120, angle: -5, stiffness: 0.35, swivel: 4, transition: 1.2 },
 };
 
-const SKY_TOP = new THREE.Color(0x0b1226);
-const SKY_BOTTOM = new THREE.Color(0x1a2447);
+const SKY_TOP = new THREE.Color(0x070d1f);
+const SKY_MID = new THREE.Color(0x12204a);
+const SKY_BOTTOM = new THREE.Color(0x2a4470);
+
+/** Vignette + saturation + edge chromatic aberration grade. */
+const GradeShader = {
+  uniforms: {
+    tDiffuse: { value: null },
+    uVignette: { value: 0.32 },
+    uSat: { value: 1.12 },
+    uCA: { value: 0.0016 },
+  },
+  vertexShader: `varying vec2 vUv; void main(){ vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position,1.0); }`,
+  fragmentShader: `
+    uniform sampler2D tDiffuse; uniform float uVignette; uniform float uSat; uniform float uCA;
+    varying vec2 vUv;
+    void main(){
+      vec2 d = vUv - 0.5;
+      float r2 = dot(d, d);
+      vec3 col;
+      col.r = texture2D(tDiffuse, vUv + d * uCA * r2 * 4.0).r;
+      col.g = texture2D(tDiffuse, vUv).g;
+      col.b = texture2D(tDiffuse, vUv - d * uCA * r2 * 4.0).b;
+      float l = dot(col, vec3(0.299, 0.587, 0.114));
+      col = mix(vec3(l), col, uSat);
+      col *= 1.0 - uVignette * smoothstep(0.12, 0.9, r2);
+      gl_FragColor = vec4(col, 1.0);
+    }`,
+};
+
+const QUALITY = {
+  low: { dpr: 1, shadows: 0, samples: 0, bloom: false, bloomStrength: 0, env: true },
+  medium: { dpr: 1.25, shadows: 2048, samples: 2, bloom: true, bloomStrength: 0.28, env: true },
+  high: { dpr: 2, shadows: 4096, samples: 4, bloom: true, bloomStrength: 0.38, env: true },
+  ultra: { dpr: 2, shadows: 4096, samples: 8, bloom: true, bloomStrength: 0.5, env: true },
+};
 
 export class Renderer {
   constructor(canvas, glRenderer = null) {
     this.canvas = canvas;
-    this.renderer = glRenderer || new THREE.WebGLRenderer({ canvas, antialias: true, powerPreference: 'high-performance' });
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.75));
+    this.renderer = glRenderer || new THREE.WebGLRenderer({ canvas, antialias: false, powerPreference: 'high-performance', stencil: false });
+    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     this.renderer.shadowMap.enabled = true;
     this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    this.renderer.toneMappingExposure = 1.0;
+    this.renderer.toneMappingExposure = 1.05;
     this.isStub = !!glRenderer;
 
     this.scene = new THREE.Scene();
     this.scene.background = SKY_TOP.clone();
-    this.scene.fog = new THREE.Fog(0x0b1226, 12000, 26000);
+    this.scene.fog = new THREE.Fog(0x16264c, 14000, 42000);
 
-    this.camera = new THREE.PerspectiveCamera(90, 1, 5, 40000);
+    this.camera = new THREE.PerspectiveCamera(90, 1, 5, 60000);
     this.camState = {
       pos: new THREE.Vector3(0, 500, -5000),
       look: new THREE.Vector3(),
-      yaw: 0, // current camera yaw (world, around Y)
+      yaw: 0,
       pitch: 0,
       fov: 90,
-      transition: 0, // 0 = ball cam, 1 = car cam (blend)
+      transition: 0,
     };
     this.camSettings = { ...CAMERA_PRESETS.default };
     this.camera.fov = this.camSettings.fov;
+    this.flashes = [];
+    this.flashTimer = 0;
+    this.ballGlow = 0;
+    this.pillar = null;
 
     this.setupLights();
+    if (!this.isStub) this.buildEnvironment();
+    this.buildSky();
     const arena = buildArena();
     this.arena = arena;
     this.scene.add(arena.group);
@@ -99,152 +141,428 @@ export class Renderer {
     this.goalFlash = 0;
     this.goalFlashColor = new THREE.Color();
 
-    // goal explosion light
+    // goal explosion light + pillar
     this.goalLight = new THREE.PointLight(0xffffff, 0, 6000, 1.2);
     this.scene.add(this.goalLight);
 
     this.setupPost();
+    this.setQuality('high');
     this.onResize();
     window.addEventListener('resize', () => this.onResize());
   }
 
+  // ------------------------------------------------------------------ post
   setupPost() {
     if (this.isStub) {
       this.composer = null;
       return;
     }
+    const q = QUALITY[this.quality] || QUALITY.high;
     const size = new THREE.Vector2(window.innerWidth, window.innerHeight);
-    this.composer = new EffectComposer(this.renderer);
+    const rt = new THREE.WebGLRenderTarget(size.x, size.y, {
+      type: THREE.HalfFloatType,
+      samples: q.samples,
+    });
+    this.composer = new EffectComposer(this.renderer, rt);
     this.composer.addPass(new RenderPass(this.scene, this.camera));
-    this.bloom = new UnrealBloomPass(size, 0.35, 0.6, 0.85);
+    this.bloom = new UnrealBloomPass(size, q.bloomStrength, 0.55, 0.82);
+    this.bloom.enabled = q.bloom;
     this.composer.addPass(this.bloom);
+    this.grade = new ShaderPass(GradeShader);
+    this.composer.addPass(this.grade);
     this.composer.addPass(new OutputPass());
   }
 
-  setQuality(q) {
-    this.quality = q;
-    const high = q === 'high';
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, high ? 1.75 : 1));
-    this.renderer.shadowMap.enabled = high || q === 'medium';
-    if (this.sun) this.sun.castShadow = this.renderer.shadowMap.enabled;
-    if (this.bloom) this.bloom.enabled = q !== 'low';
+  setQuality(qname) {
+    if (!QUALITY[qname]) qname = 'high';
+    this.quality = qname;
+    const q = QUALITY[qname];
+    if (this.isStub) return;
+    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, q.dpr));
+    this.renderer.shadowMap.enabled = q.shadows > 0;
+    if (this.sun) {
+      this.sun.castShadow = q.shadows > 0;
+      if (q.shadows > 0) this.sun.shadow.mapSize.set(q.shadows, q.shadows);
+      if (this.sun.shadow.map) {
+        this.sun.shadow.map.dispose();
+        this.sun.shadow.map = null;
+      }
+    }
+    if (this.bloom) {
+      this.bloom.enabled = q.bloom;
+      this.bloom.strength = q.bloomStrength;
+    }
+    // MSAA sample count lives on the composer's render targets -> rebuild
+    this.disposeComposer();
+    this.setupPost();
     this.onResize();
   }
 
+  disposeComposer() {
+    if (!this.composer) return;
+    this.composer.dispose && this.composer.dispose();
+    this.composer = null;
+  }
+
+  // ------------------------------------------------------------------ light
   setupLights() {
-    const hemi = new THREE.HemisphereLight(0xc9d8ff, 0x1c2a3a, 0.75);
+    const hemi = new THREE.HemisphereLight(0xbfd4ff, 0x141c2c, 0.85);
     this.scene.add(hemi);
-    const sun = new THREE.DirectionalLight(0xfff4e0, 1.7);
-    sun.position.set(2500, 6500, -3000);
+    const sun = new THREE.DirectionalLight(0xfff2dd, 1.9);
+    sun.position.set(2600, 7000, -2800);
     sun.castShadow = true;
-    sun.shadow.mapSize.set(2048, 2048);
+    sun.shadow.mapSize.set(4096, 4096);
     sun.shadow.camera.left = -6500;
     sun.shadow.camera.right = 6500;
-    sun.shadow.camera.top = 7000;
-    sun.shadow.camera.bottom = -7000;
+    sun.shadow.camera.top = 7500;
+    sun.shadow.camera.bottom = -7500;
     sun.shadow.camera.near = 500;
-    sun.shadow.camera.far = 16000;
-    sun.shadow.bias = -0.0004;
-    sun.shadow.normalBias = 4;
+    sun.shadow.camera.far = 18000;
+    sun.shadow.bias = -0.00035;
+    sun.shadow.normalBias = 3;
     this.scene.add(sun);
     this.sun = sun;
-    const fill = new THREE.DirectionalLight(0x88aaff, 0.45);
-    fill.position.set(-3000, 3000, 4000);
+    const fill = new THREE.DirectionalLight(0x86a8ff, 0.5);
+    fill.position.set(-3000, 3200, 4000);
     this.scene.add(fill);
+    const fill2 = new THREE.DirectionalLight(0xffd9b0, 0.25);
+    fill2.position.set(2000, 2400, 6000);
+    this.scene.add(fill2);
     // goal glow lights
     this.goalGlow = [];
     for (const sz of [-1, 1]) {
-      const p = new THREE.PointLight(TEAM_COLORS[sz < 0 ? 0 : 1], 3, 4000, 1.6);
+      const p = new THREE.PointLight(TEAM_COLORS[sz < 0 ? 0 : 1], 4, 5000, 1.6);
       p.position.set(0, 400, sz * 5300);
       this.scene.add(p);
       this.goalGlow.push(p);
     }
+    // corner floodlight rigs (visual + gentle spotlights, sun keeps the shadows)
+    this.floodSpots = [];
+    const R = ARENA.HALF_WIDTH + 3800;
+    const L = ARENA.HALF_LENGTH + 4500;
+    for (const sx of [-1, 1]) {
+      for (const sz of [-1, 1]) {
+        const spot = new THREE.SpotLight(0xeaf2ff, 1.1, 26000, Math.PI / 5, 0.5, 1.2);
+        spot.position.set(sx * R, 5300, sz * L);
+        spot.target.position.set(sx * 1500, 0, sz * 1500);
+        this.scene.add(spot, spot.target);
+        this.floodSpots.push(spot);
+      }
+    }
   }
 
+  /** Night-stadium reflections for paint/glass/metal (PMREM from a tiny procedural scene). */
+  buildEnvironment() {
+    const envScene = new THREE.Scene();
+    const room = new THREE.Mesh(
+      new THREE.SphereGeometry(100, 24, 16),
+      new THREE.MeshBasicMaterial({ color: 0x0a1128, side: THREE.BackSide })
+    );
+    envScene.add(room);
+    // light panels overhead
+    const panel = new THREE.MeshBasicMaterial({ color: 0xdfe9ff });
+    for (let i = 0; i < 4; i++) {
+      const lp = new THREE.Mesh(new THREE.PlaneGeometry(50, 14), panel);
+      lp.position.set(Math.cos((i / 4) * Math.PI * 2) * 35, 60, Math.sin((i / 4) * Math.PI * 2) * 35);
+      lp.lookAt(0, 0, 0);
+      envScene.add(lp);
+    }
+    // team glows at both ends
+    for (const sz of [-1, 1]) {
+      const glow = new THREE.Mesh(new THREE.SphereGeometry(22, 12, 8), new THREE.MeshBasicMaterial({ color: TEAM_COLORS[sz < 0 ? 0 : 1] }));
+      glow.position.set(0, 10, sz * 80);
+      envScene.add(glow);
+    }
+    // floor bounce
+    const floor = new THREE.Mesh(new THREE.CircleGeometry(90, 24), new THREE.MeshBasicMaterial({ color: 0x27324e }));
+    floor.rotation.x = -Math.PI / 2;
+    floor.position.y = -40;
+    envScene.add(floor);
+    const pmrem = new THREE.PMREMGenerator(this.renderer);
+    const rt = pmrem.fromScene(envScene, 0.04);
+    this.scene.environment = rt.texture;
+    this.envRT = rt;
+    pmrem.dispose();
+  }
+
+  // ------------------------------------------------------------------ sky
+  buildSky() {
+    // gradient dome
+    const skyMat = new THREE.ShaderMaterial({
+      side: THREE.BackSide,
+      depthWrite: false,
+      fog: false,
+      uniforms: {
+        top: { value: SKY_TOP.clone() },
+        mid: { value: SKY_MID.clone() },
+        bottom: { value: SKY_BOTTOM.clone() },
+      },
+      vertexShader: `varying vec3 vDir; void main(){ vDir = normalize(position); gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }`,
+      fragmentShader: `
+        uniform vec3 top; uniform vec3 mid; uniform vec3 bottom; varying vec3 vDir;
+        void main(){
+          float h = clamp(vDir.y, -1.0, 1.0);
+          vec3 col = h > 0.18
+            ? mix(mid, top, smoothstep(0.18, 0.85, h))
+            : mix(bottom, mid, smoothstep(-0.05, 0.18, h));
+          gl_FragColor = vec4(col, 1.0);
+        }`,
+    });
+    const sky = new THREE.Mesh(new THREE.SphereGeometry(52000, 32, 20), skyMat);
+    sky.frustumCulled = false;
+    this.scene.add(sky);
+
+    // stars (upper hemisphere only, additive)
+    const N = 1600;
+    const pos = new Float32Array(N * 3);
+    for (let i = 0; i < N; i++) {
+      const t = Math.random() * Math.PI * 2;
+      const p = Math.acos(Math.random() * 0.85 + 0.15); // 0..~49° from zenith
+      const r = 48000;
+      pos[i * 3] = r * Math.sin(p) * Math.cos(t);
+      pos[i * 3 + 1] = r * Math.cos(p);
+      pos[i * 3 + 2] = r * Math.sin(p) * Math.sin(t);
+    }
+    const starGeo = new THREE.BufferGeometry();
+    starGeo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+    this.stars = new THREE.Points(starGeo, new THREE.PointsMaterial({ color: 0xcfe0ff, size: 90, sizeAttenuation: true, transparent: true, opacity: 0.75, fog: false, depthWrite: false }));
+    this.scene.add(this.stars);
+
+    // moon
+    const moon = new THREE.Mesh(new THREE.CircleGeometry(1800, 32), new THREE.MeshBasicMaterial({ color: 0xdfe8ff, fog: false, toneMapped: false }));
+    moon.position.set(-19000, 22000, 26000);
+    moon.lookAt(0, 0, 0);
+    this.scene.add(moon);
+    const moonGlow = new THREE.Mesh(new THREE.CircleGeometry(3600, 32), new THREE.MeshBasicMaterial({ color: 0x8fa8dd, transparent: true, opacity: 0.25, fog: false, blending: THREE.AdditiveBlending, depthWrite: false }));
+    moonGlow.position.copy(moon.position).multiplyScalar(0.999);
+    moonGlow.lookAt(0, 0, 0);
+    this.scene.add(moonGlow);
+
+    this.buildSkyline();
+  }
+
+  /** Distant city silhouette ring with lit windows (canvas texture on a cylinder). */
+  buildSkyline() {
+    const W = 4096;
+    const H = 640;
+    const cv = document.createElement('canvas');
+    cv.width = W;
+    cv.height = H;
+    const ctx = cv.getContext('2d');
+    ctx.clearRect(0, 0, W, H);
+    let x = 0;
+    while (x < W) {
+      const bw = 60 + Math.random() * 140;
+      const bh = 120 + Math.random() * 440;
+      ctx.fillStyle = '#0b1122';
+      ctx.fillRect(x, H - bh, bw, bh);
+      // windows
+      ctx.fillStyle = 'rgba(255,214,140,0.85)';
+      for (let wy = H - bh + 14; wy < H - 18; wy += 22) {
+        for (let wx = x + 8; wx < x + bw - 8; wx += 16) {
+          if (Math.random() < 0.32) ctx.fillRect(wx, wy, 6, 9);
+        }
+      }
+      // antenna sometimes
+      if (Math.random() < 0.3) {
+        ctx.strokeStyle = '#0b1122';
+        ctx.lineWidth = 4;
+        ctx.beginPath();
+        ctx.moveTo(x + bw / 2, H - bh);
+        ctx.lineTo(x + bw / 2, H - bh - 40);
+        ctx.stroke();
+      }
+      x += bw + 14;
+    }
+    const tex = new THREE.CanvasTexture(cv);
+    tex.colorSpace = THREE.SRGBColorSpace;
+    tex.wrapS = THREE.RepeatWrapping;
+    const skyline = new THREE.Mesh(
+      new THREE.CylinderGeometry(38000, 38000, H * 4, 48, 1, true),
+      new THREE.MeshBasicMaterial({ map: tex, transparent: true, fog: false, side: THREE.BackSide, depthWrite: false })
+    );
+    skyline.position.y = H * 2 - 600;
+    this.scene.add(skyline);
+  }
+
+  // ------------------------------------------------------------------ stadium
   buildStadium() {
     const group = new THREE.Group();
     const R = ARENA.HALF_WIDTH + 700;
     const L = ARENA.HALF_LENGTH + 700;
-    const tiers = 14;
-    const seatMats = [0x2a3a66, 0x33405e, 0x243458].map((c) => new THREE.MeshStandardMaterial({ color: c, roughness: 0.95 }));
+    const tiers = 16;
+    const seatMats = [0x27365e, 0x2e3a5c, 0x223055, 0x33406b].map((c) => new THREE.MeshStandardMaterial({ color: c, roughness: 0.95, metalness: 0.05 }));
+    const fasciaMat = new THREE.MeshStandardMaterial({ color: 0x1a2136, roughness: 0.6, metalness: 0.3 });
+    const ledMat = new THREE.MeshBasicMaterial({ color: 0x2fa9ff, toneMapped: false });
     for (let t = 0; t < tiers; t++) {
       const y = 300 + t * 230;
       const inset = t * 250;
-      const mat = seatMats[t % 3];
+      const mat = seatMats[t % seatMats.length];
       for (const sx of [-1, 1]) {
         const m = new THREE.Mesh(new THREE.BoxGeometry(250, 230, L * 2 - 1200), mat);
         m.position.set(sx * (R + inset + 125), y, 0);
         group.add(m);
+        const fascia = new THREE.Mesh(new THREE.BoxGeometry(14, 60, L * 2 - 1200), fasciaMat);
+        fascia.position.set(sx * (R + inset - 2), y + 100, 0);
+        group.add(fascia);
       }
       for (const sz of [-1, 1]) {
         const m = new THREE.Mesh(new THREE.BoxGeometry(R * 2 - 1200, 230, 250), mat);
         m.position.set(0, y, sz * (L + inset + 125 + 900));
         group.add(m);
+        const fascia = new THREE.Mesh(new THREE.BoxGeometry(R * 2 - 1200, 60, 14), fasciaMat);
+        fascia.position.set(0, y + 100, sz * (L + inset + 1223));
+        group.add(fascia);
+      }
+      // LED band on the front of the first tier
+      if (t === 2) {
+        for (const sx of [-1, 1]) {
+          const led = new THREE.Mesh(new THREE.BoxGeometry(6, 22, L * 2 - 1500), ledMat);
+          led.position.set(sx * (R + inset - 12), y + 80, 0);
+          group.add(led);
+        }
+        for (const sz of [-1, 1]) {
+          const led = new THREE.Mesh(new THREE.BoxGeometry(R * 2 - 1500, 22, 6), ledMat);
+          led.position.set(0, y + 80, sz * (L + inset + 1110));
+          group.add(led);
+        }
       }
     }
     // outer floor
-    const ground = new THREE.Mesh(new THREE.PlaneGeometry(60000, 60000), new THREE.MeshStandardMaterial({ color: 0x11141d, roughness: 1 }));
+    const ground = new THREE.Mesh(new THREE.PlaneGeometry(90000, 90000), new THREE.MeshStandardMaterial({ color: 0x0d1018, roughness: 1 }));
     ground.rotation.x = -Math.PI / 2;
     ground.position.y = -3;
     group.add(ground);
-    // crowd
+    // crowd — denser, mixed fans, two blobs so the "wave" has depth
     const crowdGeo = new THREE.BufferGeometry();
     const pts = [];
     const cols = [];
-    for (let i = 0; i < 9000; i++) {
-      const t = Math.floor(Math.random() * tiers);
-      const y = 300 + t * 230 + 140;
-      const inset = t * 250;
-      const side = Math.floor(Math.random() * 4);
-      let x;
-      let z;
-      if (side < 2) {
-        x = (side === 0 ? -1 : 1) * (R + inset + 100);
-        z = (Math.random() - 0.5) * (L * 2 - 1200);
-      } else {
-        z = (side === 2 ? -1 : 1) * (L + inset + 100 + 900);
-        x = (Math.random() - 0.5) * (R * 2 - 1200);
+    for (const blob of [0, 1]) {
+      const count = blob === 0 ? 11000 : 5000;
+      for (let i = 0; i < count; i++) {
+        const t = Math.floor(Math.random() * tiers);
+        const y = 300 + t * 230 + 140 + blob * 30;
+        const inset = t * 250;
+        const side = Math.floor(Math.random() * 4);
+        let x;
+        let z;
+        if (side < 2) {
+          x = (side === 0 ? -1 : 1) * (R + inset + 100);
+          z = (Math.random() - 0.5) * (L * 2 - 1200);
+        } else {
+          z = (side === 2 ? -1 : 1) * (L + inset + 100 + 900);
+          x = (Math.random() - 0.5) * (R * 2 - 1200);
+        }
+        pts.push(x, y, z);
+        const team = Math.random() < 0.5 ? 0 : 1;
+        const c = _c.setHex(TEAM_COLORS[team]).offsetHSL((Math.random() - 0.5) * 0.06, -0.25, (Math.random() - 0.5) * 0.35);
+        if (Math.random() < 0.3) c.setHSL(Math.random(), 0.45, 0.55);
+        cols.push(c.r, c.g, c.b);
       }
-      pts.push(x, y, z);
-      const team = Math.random() < 0.5 ? 0 : 1;
-      const c = new THREE.Color(TEAM_COLORS[team]).offsetHSL((Math.random() - 0.5) * 0.08, -0.2, (Math.random() - 0.5) * 0.3);
-      if (Math.random() < 0.35) c.setHSL(Math.random(), 0.4, 0.5);
-      cols.push(c.r, c.g, c.b);
     }
     crowdGeo.setAttribute('position', new THREE.Float32BufferAttribute(pts, 3));
     crowdGeo.setAttribute('color', new THREE.Float32BufferAttribute(cols, 3));
-    this.crowd = new THREE.Points(crowdGeo, new THREE.PointsMaterial({ size: 70, vertexColors: true, sizeAttenuation: true }));
+    this.crowd = new THREE.Points(crowdGeo, new THREE.PointsMaterial({ size: 62, vertexColors: true, sizeAttenuation: true }));
     group.add(this.crowd);
-    // flood lights at the four corners
+    // camera-flash sparkles in the stands
+    for (let i = 0; i < 14; i++) {
+      const sp = new THREE.Sprite(new THREE.SpriteMaterial({ color: 0xffffff, transparent: true, opacity: 0, depthWrite: false, blending: THREE.AdditiveBlending }));
+      sp.scale.setScalar(180);
+      group.add(sp);
+      this.flashes.push({ sp, t: 0 });
+    }
+    this.stadiumGroup = group;
+    // flood lights at the four corners (towers)
     for (const sx of [-1, 1]) {
       for (const sz of [-1, 1]) {
-        const pole = new THREE.Mesh(new THREE.CylinderGeometry(40, 60, 5200, 8), new THREE.MeshStandardMaterial({ color: 0x555b6a }));
+        const pole = new THREE.Mesh(new THREE.CylinderGeometry(40, 70, 5200, 10), new THREE.MeshStandardMaterial({ color: 0x4b5262, roughness: 0.6, metalness: 0.5 }));
         pole.position.set(sx * (R + 3800), 2600, sz * (L + 4500));
         group.add(pole);
-        const head = new THREE.Mesh(new THREE.BoxGeometry(700, 220, 120), new THREE.MeshBasicMaterial({ color: 0xffffff }));
-        head.material.toneMapped = false;
+        const head = new THREE.Group();
+        for (let i = 0; i < 8; i++) {
+          const lamp = new THREE.Mesh(new THREE.BoxGeometry(150, 90, 40), new THREE.MeshBasicMaterial({ color: 0xf6faff, toneMapped: false }));
+          lamp.position.set((i % 4 - 1.5) * 170, Math.floor(i / 4) * 110, 0);
+          head.add(lamp);
+        }
         head.position.set(sx * (R + 3800), 5300, sz * (L + 4500));
         head.lookAt(0, 0, 0);
         group.add(head);
       }
     }
+    this.buildJumbotrons(group);
     this.scene.add(group);
   }
 
+  /** Big score screens hanging above each goal. */
+  buildJumbotrons(group) {
+    this.jumbotrons = [];
+    for (const sz of [-1, 1]) {
+      const cv = document.createElement('canvas');
+      cv.width = 1024;
+      cv.height = 512;
+      const tex = new THREE.CanvasTexture(cv);
+      tex.colorSpace = THREE.SRGBColorSpace;
+      const screen = new THREE.Mesh(new THREE.PlaneGeometry(2600, 1300), new THREE.MeshBasicMaterial({ map: tex, toneMapped: false }));
+      screen.position.set(0, 3000, sz * (ARENA.HALF_LENGTH + 2600));
+      screen.lookAt(0, 1200, 0);
+      group.add(screen);
+      // frame + struts
+      const frame = new THREE.Mesh(new THREE.BoxGeometry(2760, 1460, 90), new THREE.MeshStandardMaterial({ color: 0x232a3c, roughness: 0.6, metalness: 0.5 }));
+      frame.position.copy(screen.position);
+      frame.quaternion.copy(screen.quaternion);
+      frame.translateZ(-60);
+      group.add(frame);
+      this.jumbotrons.push({ cv, tex, ctx: cv.getContext('2d'), lastKey: '' });
+    }
+  }
+
+  drawJumbotron(j, score, clockText, ot) {
+    const key = `${score[0]}-${score[1]}-${clockText}-${ot}`;
+    if (key === j.lastKey) return;
+    j.lastKey = key;
+    const ctx = j.ctx;
+    ctx.fillStyle = '#05070f';
+    ctx.fillRect(0, 0, 1024, 512);
+    const grad = ctx.createLinearGradient(0, 0, 1024, 0);
+    grad.addColorStop(0, '#123a8f');
+    grad.addColorStop(0.5, '#0a1030');
+    grad.addColorStop(1, '#8f4a12');
+    ctx.fillStyle = grad;
+    ctx.fillRect(0, 0, 1024, 512);
+    ctx.font = 'bold 300px Rajdhani, Arial Narrow, Arial';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillStyle = '#7fb3ff';
+    ctx.fillText(String(score[0]), 240, 250);
+    ctx.fillStyle = '#ffb066';
+    ctx.fillText(String(score[1]), 784, 250);
+    ctx.fillStyle = '#dfe6ff';
+    ctx.font = 'bold 150px Rajdhani, Arial Narrow, Arial';
+    ctx.fillText('–', 512, 235);
+    ctx.font = 'bold 84px Rajdhani, Arial Narrow, Arial';
+    ctx.fillStyle = '#9fb0d8';
+    ctx.fillText(ot ? 'OVERTIME' : clockText, 512, 430);
+    ctx.strokeStyle = 'rgba(255,255,255,0.25)';
+    ctx.lineWidth = 6;
+    ctx.strokeRect(8, 8, 1008, 496);
+    j.tex.needsUpdate = true;
+  }
+
+  // ------------------------------------------------------------------ ball
   buildBall() {
     const cv = document.createElement('canvas');
-    cv.width = 1024;
-    cv.height = 512;
+    cv.width = 2048;
+    cv.height = 1024;
     const ctx = cv.getContext('2d');
-    // RL-like ball: light grey with darker hexagonal panels and a dark equator band
-    ctx.fillStyle = '#d9dde6';
-    ctx.fillRect(0, 0, 1024, 512);
-    ctx.fillStyle = '#9aa3b5';
-    const hexR = 46;
-    for (let row = 0; row < 8; row++) {
-      for (let col = 0; col < 14; col++) {
-        const x = col * 78 + (row % 2 ? 39 : 0);
-        const y = 40 + row * 62;
+    ctx.fillStyle = '#cdd3e0';
+    ctx.fillRect(0, 0, 2048, 1024);
+    // hex panel pattern
+    ctx.fillStyle = '#8d97ad';
+    const hexR = 52;
+    for (let row = 0; row < 12; row++) {
+      for (let col = 0; col < 24; col++) {
+        const x = col * 88 + (row % 2 ? 44 : 0);
+        const y = 30 + row * 82;
         ctx.beginPath();
         for (let k = 0; k < 6; k++) {
           const a = (k / 6) * Math.PI * 2 + Math.PI / 6;
@@ -256,26 +574,59 @@ export class Renderer {
         ctx.fill();
       }
     }
-    ctx.strokeStyle = '#3a4560';
-    ctx.lineWidth = 14;
+    // seams
+    ctx.strokeStyle = '#39445e';
+    ctx.lineWidth = 16;
     ctx.beginPath();
-    ctx.moveTo(0, 256);
-    ctx.lineTo(1024, 256);
+    ctx.moveTo(0, 512);
+    ctx.lineTo(2048, 512);
     ctx.stroke();
-    ctx.lineWidth = 8;
-    for (const y of [120, 392]) {
+    ctx.lineWidth = 9;
+    for (const y of [235, 789]) {
       ctx.beginPath();
       ctx.moveTo(0, y);
-      ctx.lineTo(1024, y);
+      ctx.lineTo(2048, y);
       ctx.stroke();
+    }
+    // subtle glow triangles like the RL ball
+    ctx.strokeStyle = 'rgba(120,190,255,0.35)';
+    ctx.lineWidth = 5;
+    for (let row = 0; row < 12; row++) {
+      for (let col = 0; col < 24; col++) {
+        if ((row + col) % 5 !== 0) continue;
+        const x = col * 88 + (row % 2 ? 44 : 0);
+        const y = 30 + row * 82;
+        ctx.beginPath();
+        for (let k = 0; k < 3; k++) {
+          const a = (k / 3) * Math.PI * 2 + Math.PI / 6;
+          const px = x + Math.cos(a) * hexR * 0.95;
+          const py = y + Math.sin(a) * hexR * 0.95;
+          k === 0 ? ctx.moveTo(px, py) : ctx.lineTo(px, py);
+        }
+        ctx.closePath();
+        ctx.stroke();
+      }
     }
     const tex = new THREE.CanvasTexture(cv);
     tex.colorSpace = THREE.SRGBColorSpace;
     tex.anisotropy = 8;
-    const mat = new THREE.MeshStandardMaterial({ map: tex, roughness: 0.4, metalness: 0.2 });
-    const mesh = new THREE.Mesh(new THREE.SphereGeometry(BALL.RADIUS, 40, 28), mat);
+    const mat = new THREE.MeshStandardMaterial({
+      map: tex,
+      roughness: 0.32,
+      metalness: 0.42,
+      envMapIntensity: 1.2,
+      emissive: new THREE.Color(0x88bbff),
+      emissiveIntensity: 0,
+    });
+    const mesh = new THREE.Mesh(new THREE.SphereGeometry(BALL.RADIUS, 48, 32), mat);
     mesh.castShadow = true;
+    this.ballMat = mat;
     return mesh;
+  }
+
+  /** Called by the engine on ball touches: flashes the ball's glow seams. */
+  ballTouch(speed) {
+    this.ballGlow = Math.min(1, this.ballGlow + speed / 2300);
   }
 
   buildTrail(color, n) {
@@ -337,7 +688,11 @@ export class Renderer {
     const w = window.innerWidth;
     const h = window.innerHeight;
     this.renderer.setSize(w, h, false);
-    if (this.composer) this.composer.setSize(w, h);
+    if (this.composer) {
+      // keep the composer's render targets in sync with the device pixel ratio
+      this.composer.setPixelRatio(this.renderer.getPixelRatio());
+      this.composer.setSize(w, h);
+    }
     this.camera.aspect = w / h;
     this.camera.updateProjectionMatrix();
   }
@@ -387,6 +742,7 @@ export class Renderer {
     tex.colorSpace = THREE.SRGBColorSpace;
     const sprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, transparent: true, depthTest: false }));
     sprite.scale.set(110, 14, 1);
+    void color;
     const draw = (frac) => {
       ctx.clearRect(0, 0, 128, 16);
       ctx.fillStyle = 'rgba(0,0,0,0.6)';
@@ -399,7 +755,7 @@ export class Renderer {
     return { sprite, draw, last: -1 };
   }
 
-  // ------------------------------------------------------------------------
+  // ------------------------------------------------------------------ frame
   update(game, dt, view) {
     this.clock += dt;
     const ball = game.ball;
@@ -421,6 +777,11 @@ export class Renderer {
     this.ballIndicator.position.set(bp.x, bp.y + BALL.RADIUS + 80 + Math.sin(this.clock * 5) * 8, bp.z);
     this.ballIndicator.rotation.y += dt * 2;
     this.ballIndicator.visible = !replay;
+    // ball glow seams fade after touches
+    if (this.ballGlow > 0) {
+      this.ballGlow = Math.max(0, this.ballGlow - dt * 1.6);
+      this.ballMat.emissiveIntensity = this.ballGlow * 0.8;
+    }
 
     // remove meshes for cars that no longer exist
     for (const [id, m] of this.carMeshes) {
@@ -435,15 +796,30 @@ export class Renderer {
       const pm = this.arena.pads[i];
       const p = game.pads[i];
       pm.orb.visible = p.active;
-      pm.ringMat.opacity = p.active ? 0.85 : 0.15;
+      pm.ringMat.opacity = p.active ? 0.9 : 0.15;
+      if (pm.beam) pm.beam.material.opacity = p.active ? 0.1 + 0.06 * Math.sin(this.clock * 2.5 + i) : 0;
       if (p.active) {
-        pm.orb.rotation.y += dt * 1.5;
+        pm.orb.rotation.y += dt * 1.6;
+        pm.orb.rotation.x += dt * 0.7;
         pm.orb.position.y = (p.big ? 110 : 55) + Math.sin(this.clock * 3 + i) * 6;
-        pm.orb.scale.setScalar(1);
       } else if (p.timer > 0) {
-        // respawn "charging" ring
         const total = p.big ? BOOST_PAD.BIG_RESPAWN : BOOST_PAD.SMALL_RESPAWN;
-        pm.ringMat.opacity = 0.15 + 0.5 * (1 - p.timer / total);
+        pm.ringMat.opacity = 0.15 + 0.55 * (1 - p.timer / total);
+      }
+    }
+
+    // arena ambience: LED pulse, scrolling ads, goal mouth glow
+    const anim = this.arena.animated;
+    if (anim) {
+      for (const led of anim.leds) {
+        led.mat.color.copy(led.base).multiplyScalar(0.75 + 0.35 * Math.sin(this.clock * 2 + led.phase));
+      }
+      for (const ad of anim.ads) {
+        ad.map.offset.x = (this.clock * 0.012) % 1;
+      }
+      const goalPulse = 0.2 + 0.12 * Math.sin(this.clock * 2.2);
+      for (const g of anim.goalGlow) {
+        g.material.opacity = goalPulse + this.goalFlash * 0.5;
       }
     }
 
@@ -467,6 +843,7 @@ export class Renderer {
       if (land && ball.pos.y > BALL.RADIUS + 30) {
         this.landingMarker.visible = true;
         this.landingMarker.position.set(land.pos.x, 2, land.pos.z);
+        this.landingMarker.rotation.z += dt * 0.8;
       } else this.landingMarker.visible = false;
     } else {
       this.predLine.visible = false;
@@ -479,8 +856,50 @@ export class Renderer {
       this.goalLight.intensity = this.goalFlash * 40;
       this.goalLight.color.copy(this.goalFlashColor);
     } else this.goalLight.intensity = 0;
-    // crowd sway
-    if (this.crowd) this.crowd.position.y = Math.sin(this.clock * 2.2) * 6;
+    if (this.pillar) {
+      this.pillar.life -= dt;
+      const f = Math.max(0, this.pillar.life / this.pillar.maxLife);
+      this.pillar.mesh.material.opacity = 0.5 * f;
+      this.pillar.mesh.scale.set(1 + (1 - f) * 2.5, 1, 1 + (1 - f) * 2.5);
+      if (this.pillar.life <= 0) {
+        this.scene.remove(this.pillar.mesh);
+        this.pillar = null;
+      }
+    }
+
+    // crowd: gentle sway + camera flashes (more after goals)
+    if (this.crowd) {
+      this.crowd.position.y = Math.sin(this.clock * 2.2) * 6;
+      this.crowd.position.x = Math.sin(this.clock * 1.1) * 10;
+      this.flashTimer -= dt;
+      const rate = this.goalFlash > 0 ? 18 : 2.2;
+      if (this.flashTimer <= 0) {
+        this.flashTimer = 1 / rate;
+        const f = this.flashes.find((x) => x.t <= 0);
+        if (f) {
+          f.t = 0.14;
+          const side = Math.floor(Math.random() * 4);
+          const t = Math.floor(Math.random() * 16);
+          const inset = t * 250;
+          const R2 = ARENA.HALF_WIDTH + 700;
+          const L2 = ARENA.HALF_LENGTH + 700;
+          if (side < 2) f.sp.position.set((side === 0 ? -1 : 1) * (R2 + inset + 150), 300 + t * 230 + 150, (Math.random() - 0.5) * (L2 * 2 - 1400));
+          else f.sp.position.set((Math.random() - 0.5) * (R2 * 2 - 1400), 300 + t * 230 + 150, (side === 2 ? -1 : 1) * (L2 + inset + 150 + 900));
+        }
+      }
+      for (const f of this.flashes) {
+        if (f.t > 0) {
+          f.t -= dt;
+          f.sp.material.opacity = clamp(f.t / 0.14, 0, 1);
+        } else f.sp.material.opacity = 0;
+      }
+    }
+
+    // jumbotrons follow the score/clock
+    if (this.jumbotrons && game.score) {
+      const clockText = game.clock === Infinity ? (game.drill ? 'TRAINING' : 'FREE PLAY') : `${Math.floor(Math.ceil(game.clock) / 60)}:${String(Math.ceil(game.clock) % 60).padStart(2, '0')}`;
+      for (const j of this.jumbotrons) this.drawJumbotron(j, game.score, clockText, game.overtime);
+    }
 
     this.updateMarkers(game);
     this.updateParticles(dt);
@@ -533,19 +952,24 @@ export class Renderer {
     }
     for (const w of m.wheels) {
       w.spin.rotation.x = car.wheelSpin;
-      if (w.front) w.pivot.rotation.y = -car.steerVisual * 0.5;
+      if (w.front) w.pivot.rotation.y = car.steerVisual * 0.45;
       // wheel droop in the air
       w.pivot.position.y = car.onGround ? -squat * 0.5 : -4;
     }
     const boosting = car.boostActive;
     m.flame.visible = boosting;
     m.flameCore.visible = boosting;
-    m.flameLight.intensity = boosting ? 6 + Math.random() * 3 : 0;
+    m.flameLight.intensity = boosting ? 7 + Math.random() * 4 : 0;
     if (boosting) {
       const s = 0.85 + Math.random() * 0.4;
       m.flame.scale.set(1, s, 1);
       m.flameCore.scale.set(1, s * 1.1, 1);
       if (Math.random() < 0.7) this.spawnParticle(car, 'boost');
+    }
+    // brake lights
+    if (m.brakeMat) {
+      const braking = car.controls.throttle < -0.1 || (car.controls.throttle === 0 && car.onGround && car.speed > 200);
+      m.brakeMat.emissiveIntensity = lerp(m.brakeMat.emissiveIntensity, braking ? 6 : 1.2, 1 - Math.exp(-12 * dt));
     }
     if (car.supersonic && Math.random() < 0.8) this.spawnParticle(car, 'trail');
     if (car.handbraking && car.onGround && car.speed > 300 && Math.random() < 0.8) this.spawnParticle(car, 'skid');
@@ -557,7 +981,7 @@ export class Renderer {
       if (ev.wallHit > 400) this.burst(car.pos, 0xffffff, 8, 250, 0.3, 12);
       if (ev.flipReset) this.spawnRing(car.pos, 0x44ffcc, 90);
     }
-    if (m.underglow) m.underglow.visible = car.onGround;
+    m.underglow.visible = car.onGround || car.boostActive;
     m.hitbox.visible = this.showHitbox;
     // supersonic ribbon trail
     _v.copy(car.pos).add(_v2.set(0, 20, 0));
@@ -583,18 +1007,18 @@ export class Renderer {
       m.group.quaternion.slerpQuaternions(fa.q, fb.q, u);
       for (const w of m.wheels) {
         w.spin.rotation.x = lerp(fa.wheel, fb.wheel, u);
-        if (w.front) w.pivot.rotation.y = -lerp(fa.steer, fb.steer, u) * 0.5;
+        if (w.front) w.pivot.rotation.y = lerp(fa.steer, fb.steer, u) * 0.45;
       }
       m.flame.visible = fa.boost;
       m.flameCore.visible = fa.boost;
-      m.flameLight.intensity = fa.boost ? 6 : 0;
+      m.flameLight.intensity = fa.boost ? 7 : 0;
       if (fa.boost && Math.random() < 0.5) this.spawnParticleAt(m.group.position, m.group.quaternion, 'boost');
       m.trail.mat.uniforms.opacity.value = 0;
-      if (m.underglow) m.underglow.visible = true;
+      m.underglow.visible = true;
     }
   }
 
-  // ------------------------------------------------------------------------
+  // ---------------------------------------------------------------- camera
   updateCamera(game, dt, view, replay) {
     const car = view.followCar;
     const cam = this.camera;
@@ -630,7 +1054,6 @@ export class Renderer {
     }
 
     // ---- Rocket League style camera ----------------------------------------
-    // Target yaw: ball cam looks from car toward ball; car cam follows the car's heading.
     const carPos = car.pos;
     const carFwd = car.getForward(_v4);
     carFwd.y = 0;
@@ -646,7 +1069,6 @@ export class Renderer {
       targetYaw = Math.atan2(toBall.x, toBall.z);
       lookAt = _v3.copy(bp);
     } else {
-      // car cam: camera aligns with the car's velocity/heading, swivels with steering
       const vel = _v.copy(car.vel);
       vel.y = 0;
       const dir = vel.lengthSq() > 300 * 300 && !view.rearView ? vel.normalize().lerp(carFwd, 0.5).normalize() : carFwd.clone();
@@ -664,19 +1086,23 @@ export class Renderer {
     let dYaw = targetYaw - st.yaw;
     while (dYaw > Math.PI) dYaw -= Math.PI * 2;
     while (dYaw < -Math.PI) dYaw += Math.PI * 2;
-    const swivelK = 4 + cs.swivel * 2.4; // 1..10 -> 6.4..28
+    const swivelK = 4 + cs.swivel * 2.4;
     const yawRate = view.snap ? 1 : 1 - Math.exp(-swivelK * dt);
     st.yaw += dYaw * yawRate;
 
     // desired camera position: behind the car along the smoothed yaw, at height, then tilted by angle
     const back = _v.set(-Math.sin(st.yaw), 0, -Math.cos(st.yaw));
     const desired = _v2.copy(carPos).addScaledVector(back, cs.distance).add(_v4.set(0, cs.height, 0));
-    // ball cam: as the ball rises, pull the camera up/back so both stay in frame
+    // ball cam: as the ball climbs, lift and pull the camera back so a high
+    // aerial ball stays comfortably in frame (aerial-friendly camera)
     if (view.ballCam) {
       const dist = Math.hypot(bp.x - carPos.x, bp.z - carPos.z);
-      const rise = clamp((bp.y - carPos.y) / Math.max(400, dist), 0, 1.2);
-      desired.y += rise * 140;
-      desired.addScaledVector(back, rise * 90);
+      const climb = clamp(bp.y - carPos.y, 0, 2600);
+      const rise = climb > 150 ? climb : 0;
+      desired.y += rise * 0.38;
+      desired.addScaledVector(back, Math.min(rise * 0.3, 850));
+      // never let the camera drop below the look line for high balls
+      void dist;
     }
     // keep inside the arena
     desired.y = Math.max(desired.y, 30);
@@ -736,7 +1162,6 @@ export class Renderer {
     const bp = this.ballMesh.position;
     const scorer = game.lastGoal && game.lastGoal.scorer;
     const m = scorer ? this.carMeshes.get(scorer.id) : null;
-    // first half: chase cam behind the scorer; second half: goal-line view of the ball
     const phase = r.progress;
     let desired;
     let look;
@@ -771,7 +1196,7 @@ export class Renderer {
     cam.updateProjectionMatrix();
   }
 
-  // ------------------------------------------------------------------------
+  // ---------------------------------------------------------------- particles
   spawnParticle(car, type) {
     this.spawnParticleAt(car.pos, car.quat, type, car);
   }
@@ -931,15 +1356,27 @@ export class Renderer {
     this.shake = Math.max(this.shake, amount * 0.5);
   }
 
-  /** Goal explosion: flash light, shockwave ring, particle burst. */
+  /** Goal explosion: flash light, shockwave ring, particle burst, light pillar. */
   goalExplosion(pos, color) {
     this.goalFlash = 1;
     this.goalFlashColor.setHex(color);
     this.goalLight.position.copy(pos).add(_v.set(0, 300, 0));
-    this.burst(pos, color, 120, 1800, 1.4, 40);
-    this.burst(pos, 0xffffff, 40, 900, 0.8, 26);
-    this.spawnRing(pos, color, 1400, 0.8);
-    this.kick(40);
+    this.burst(pos, color, 140, 1900, 1.4, 42);
+    this.burst(pos, 0xffffff, 50, 1000, 0.8, 26);
+    this.burst(pos, color, 60, 3200, 1.8, 30);
+    this.spawnRing(pos, color, 1600, 0.9);
+    this.spawnRing(pos, 0xffffff, 900, 0.6);
+    this.kick(46);
+    if (!this.isStub) {
+      if (this.pillar) this.scene.remove(this.pillar.mesh);
+      const mesh = new THREE.Mesh(
+        new THREE.CylinderGeometry(120, 260, 3600, 24, 1, true),
+        new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.5, depthWrite: false, blending: THREE.AdditiveBlending, side: THREE.DoubleSide, toneMapped: false })
+      );
+      mesh.position.copy(pos).add(_v.set(0, 1800, 0));
+      this.scene.add(mesh);
+      this.pillar = { mesh, life: 1.1, maxLife: 1.1 };
+    }
   }
 }
 

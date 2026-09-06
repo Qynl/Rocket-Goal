@@ -36,8 +36,8 @@ export const DRILLS = [
     id: 'aerials',
     name: 'Aerials',
     icon: '🚀',
-    desc: 'Balls lobbed into the air. Jump, tilt, boost, hit. Later levels are higher, faster and require air roll.',
-    tip: 'Jump, hold, tilt your nose toward where the ball will be, then feather the boost. Fix your angle early, not late.',
+    desc: 'Balls lobbed into the air — straight lobs, side aerials, drifting balls and ceiling drop shots. The landing marker shows where to meet it.',
+    tip: 'Jump, hold, tilt your nose toward where the ball will be, then feather the boost. Fix your angle early, not late. Powerslide + A/D air-rolls.',
     hasBots: false,
   },
   {
@@ -354,47 +354,62 @@ class SavesDrill extends Drill {
 class AerialDrill extends Drill {
   constructor(game) {
     super(game, 'aerials');
-    this.attemptLimit = 6;
+    this.attemptLimit = 8;
+    this.airTime = 0;
   }
   setup() {
     const s = this.humanSign;
     const L = this.level;
-    this.placeCar(rand(-1500, 1500), -s * rand(2500, 3800), s === 1 ? 0 : Math.PI, 100);
-    // ball starts ahead and is tossed up
-    const bx = this.human.pos.x + rand(-1200, 1200);
-    const bz = this.human.pos.z + s * rand(1800, 3000);
-    const vy = 750 + L * 150 + rand(0, 150);
-    const vx = rand(-1, 1) * (100 + L * 140);
-    const vz = s * rand(-150, 150) * (L >= 3 ? 2 : 1);
-    this.placeBall(bx, BALL.RADIUS + 50, bz, vx, vy, vz);
+    this.placeCar(rand(-1500, 1500), -s * rand(2600, 4000), s === 1 ? 0 : Math.PI, 100);
+    // Level variety:
+    //  1 gentle straight-up lob · 2 higher, drifting · 3 side aerials (air roll)
+    //  4 ball drifting away — boost through it · 5 ceiling-bounce drop shots
+    let bx = this.human.pos.x + rand(-900, 900) + (L >= 3 ? randSign() * rand(1400, 2400) : 0);
+    const bz = this.human.pos.z + s * rand(2000, 3000);
+    const vy = L >= 5 ? 1750 + rand(0, 150) : 800 + L * 190 + rand(0, 150);
+    const vx = rand(-1, 1) * (120 + L * 160);
+    const vz = L >= 4 ? s * rand(250, 480) : s * rand(-160, 160) * (L >= 3 ? 2.2 : 1);
+    this.placeBall(clamp(bx, -3500, 3500), BALL.RADIUS + 50, bz, vx, vy, vz);
+    this.minHeight = L >= 3 ? 500 : 350;
     this.peak = BALL.RADIUS + 50 + (vy * vy) / (2 * 650);
   }
   onTouch(car) {
     if (car === this.human && !this.touched) {
       this.touched = true;
       const h = this.ball.pos.y;
-      const aerial = h > 350;
+      const air = Math.max(0, this.human.airTime);
+      const aerial = h > this.minHeight;
+      const boostLeft = Math.round(this.human.boost);
+      const airNote = `${Math.round(h)} uu after ${air.toFixed(1)}s air · ${boostLeft} boost left`;
       const toward = this.ball.vel.z * this.humanSign > 400;
       if (!aerial) {
-        this.finishAttempt(false, 'Touched it too low — that was not an aerial. Jump earlier.');
+        this.finishAttempt(false, `Too low (${Math.round(h)} uu — need ${this.minHeight}). Jump earlier and commit with boost.`);
       } else if (this.ballScoredSoon()) {
-        this.finishAttempt(true, 'Aerial and on target!');
+        this.finishAttempt(true, `Aerial goal! ${airNote}`);
       } else if (toward) {
-        this.finishAttempt(true, `Aerial touch at ${Math.round(h)} uu. Now aim it.`);
+        this.finishAttempt(true, `Aerial touch, heading their way. ${airNote}`);
       } else {
-        this.finishAttempt(true, 'Aerial touch — try to hit it toward the goal.');
+        this.finishAttempt(true, `Aerial touch — aim it at the goal. ${airNote}`);
       }
     }
+  }
+  hudLines() {
+    return [...super.hudLines(), `Hit it above ${this.minHeight || 350} uu`, `Air time ${this.airTime.toFixed(1)}s`];
   }
   ballScoredSoon() {
     const pred = this.ball.predict(3, 1 / 15);
     const s = this.humanSign;
     return pred.some((p) => p.pos.z * s > ARENA.HALF_LENGTH - 20 && Math.abs(p.pos.x) < ARENA.GOAL_HALF_WIDTH && p.pos.y < ARENA.GOAL_HEIGHT);
   }
-  updateAttempt() {
+  updateAttempt(dt) {
+    this.airTime = Math.max(this.airTime, this.human.airTime);
     if (!this.touched && this.ball.pos.y < 200 && this.ball.vel.y < 0 && this.attemptTime > 1.5) {
-      this.finishAttempt(false, 'Missed. Jump earlier and commit with boost.');
+      this.finishAttempt(false, 'Missed. Jump earlier, tilt the nose up and commit with boost.');
     }
+  }
+  nextAttempt() {
+    this.airTime = 0;
+    super.nextAttempt();
   }
 }
 

@@ -1,4 +1,4 @@
-import { JSDOM } from '/tmp/jt/node_modules/jsdom/lib/api.js';
+import { JSDOM } from 'jsdom';
 const dom = new JSDOM('<!doctype html><html><body><canvas id="game"></canvas><div id="ui"></div></body></html>', { pretendToBeVisual: true });
 globalThis.window = dom.window; globalThis.document = dom.window.document;
 Object.defineProperty(globalThis, 'navigator', { value: dom.window.navigator, configurable: true });

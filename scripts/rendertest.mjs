@@ -1,12 +1,26 @@
 // Exercise renderer.js construction & per-frame update with the GL renderer stubbed out.
-import { JSDOM } from '/tmp/jt/node_modules/jsdom/lib/api.js';
+import { JSDOM } from 'jsdom';
 const dom = new JSDOM(`<!doctype html><html><body><canvas id="game"></canvas><div id="ui"></div></body></html>`, { pretendToBeVisual: true });
 const w = dom.window;
 globalThis.window = w; globalThis.document = w.document; globalThis.localStorage = { _d:{}, getItem(k){return this._d[k]??null}, setItem(k,v){this._d[k]=String(v)}, removeItem(k){delete this._d[k]} };
 Object.defineProperty(globalThis, "navigator", { value: w.navigator, configurable: true });
 globalThis.HTMLElement = w.HTMLElement; globalThis.performance = w.performance; globalThis.devicePixelRatio = 1;
 w.HTMLCanvasElement.prototype.getContext = function (type) {
-  if (type === '2d') return new Proxy({}, { get: (t, k) => (k === 'measureText' ? () => ({ width: 10 }) : k === 'getImageData' ? () => ({ data: new Uint8ClampedArray(4 * 1024 * 1024) }) : () => {}), set: () => true });
+  if (type === '2d')
+    return new Proxy(
+      {},
+      {
+        get: (t, k) =>
+          k === 'measureText'
+            ? () => ({ width: 10 })
+            : k === 'getImageData'
+              ? () => ({ data: new Uint8ClampedArray(4 * 1024 * 1024) })
+              : k === 'createLinearGradient' || k === 'createRadialGradient'
+                ? () => ({ addColorStop() {} })
+                : () => {},
+        set: () => true,
+      }
+    );
   return null;
 };
 globalThis.HTMLCanvasElement = w.HTMLCanvasElement;
