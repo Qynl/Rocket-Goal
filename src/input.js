@@ -13,6 +13,7 @@ export const PRESETS = {
     handbrake: ['ShiftLeft', 'ShiftRight'],
     airRollLeft: ['KeyQ'],
     airRollRight: ['KeyE'],
+    useItem: ['KeyX'],
     ballCam: ['Space'],
     rearView: ['Mouse1'],
     scoreboard: ['Tab'],
@@ -32,6 +33,7 @@ export const PRESETS = {
     handbrake: ['ControlLeft', 'ControlRight', 'KeyF'],
     airRollLeft: ['KeyQ'],
     airRollRight: ['KeyE'],
+    useItem: ['KeyX'],
     ballCam: ['KeyC'],
     rearView: ['KeyR'],
     scoreboard: ['Tab'],
@@ -167,6 +169,7 @@ export class Input {
       ballCamPressed: b(3) && !this.lastGamepadButtons[3],
       rearView: b(10),
       scoreboard: b(8),
+      item: b(12), // D-pad up
       startPressed: b(9) && !this.lastGamepadButtons[9],
     };
     out.pitch = ly; // stick back (positive y) => nose up
@@ -197,6 +200,7 @@ export class Input {
         c.roll = gp.steer; // free air roll: stick left => roll left
         c.yaw = 0;
       }
+      c.useItem = gp.item;
       this.rearView = gp.rearView;
       this.scoreboard = gp.scoreboard;
       if (gp.startPressed && this.onAction) this.onAction('pause');
@@ -226,6 +230,7 @@ export class Input {
       c.roll = right - left;
       c.yaw = 0;
     }
+    c.useItem = this.isDown('useItem');
     this.rearView = this.isDown('rearView');
     this.scoreboard = this.isDown('scoreboard');
     return c;
@@ -242,6 +247,7 @@ export const BIND_LABELS = {
   handbrake: 'Powerslide / Air roll',
   airRollLeft: 'Air roll left',
   airRollRight: 'Air roll right',
+  useItem: 'Use Rumble item',
   ballCam: 'Toggle ball cam',
   rearView: 'Rear view',
   scoreboard: 'Scoreboard (hold)',

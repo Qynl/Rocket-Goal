@@ -24,6 +24,9 @@ const { HudStore, drawMinimap } = await import('../src/ui/hudStore.js');
 const { Input } = await import('../src/input.js');
 const { Game } = await import('../src/game.js');
 const { Coach } = await import('../src/coach.js');
+const { defaultMutators, describe: describeMutators } = await import('../src/mutators.js');
+const { CARS } = await import('../src/cars.js');
+const { loadProfile, awardMatch, rankOf, levelOf } = await import('../src/progress.js');
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 let errors = [];
@@ -36,12 +39,15 @@ document.body.appendChild(canvas);
 const input = new Input(canvas);
 const fakeEngine = {
   audio: { ui() {}, setVolume() {}, resume() {} },
-  renderer: { setCameraSettings() {}, showPrediction: false, setQuality() {} },
+  renderer: { setCameraSettings() {}, showPrediction: false, setQuality() {}, setArenaTheme(id) { this.arena = id; }, arena: 'stadium' },
   input,
   game: null,
-  settings: { teamSize: 1, difficulty: 'allstar', duration: 300, humanTeam: 0, boostMutator: 'normal', camera: { fov: 90, distance: 270, height: 110, angle: -3, stiffness: 0.5, swivel: 2.5 }, quality: 'high', replays: true, showPrediction: false, coach: true, quickChat: true, volume: 0.6, playerName: 'You', drillLevel: 1, lastDrill: 'shooting' },
-  applySettings() {},
+  previews: [],
+  settings: { teamSize: 1, difficulty: 'allstar', duration: 300, humanTeam: 0, arena: 'stadium', mutators: defaultMutators(), loadout: { car: 'octane', primary: 0x1b3f9e, secondary: 0x0e1220, finish: 'glossy', wheels: 'spoke', trail: 'default', explosion: 'default' }, camera: { fov: 90, distance: 270, height: 110, angle: -3, stiffness: 0.5, swivel: 2.5 }, quality: 'high', replays: true, showPrediction: false, coach: true, quickChat: true, volume: 0.6, playerName: 'You', drillLevel: 1, lastDrill: 'shooting' },
+  applySettings(s) { this.settings = s; },
   startGame(cfg) { this.started = cfg; },
+  setGaragePreview(loadout) { this.previews.push(JSON.parse(JSON.stringify(loadout))); return {}; },
+  clearGaragePreview() { this.previews.push(null); },
   resume() {}, restart() {}, quitToMenu() {}, forfeit() {},
 };
 const nav = (p) => renderUi(p);
@@ -132,6 +138,122 @@ await tryasync('hud store + hud render', async () => {
   hudStore.setVisible(false);
   await sleep(40);
 });
+await tryasync('garage: cars, hitbox readout, cosmetics', async () => {
+  fakeEngine.previews.length = 0;
+  renderUi({ type: 'garage' });
+  await sleep(250);
+  if (!document.body.textContent.includes('Garage')) throw new Error('no garage title');
+  const cars = document.querySelectorAll('.car-grid .car');
+  if (cars.length !== CARS.length) throw new Error('car cards ' + cars.length + ' != ' + CARS.length);
+  if (!fakeEngine.previews.length) throw new Error('turntable preview not requested');
+  if (!document.body.textContent.includes('Octane hitbox')) throw new Error('no hitbox readout');
+  // pick the Merc and check the hitbox numbers change
+  const merc = Array.from(cars).find((c) => c.textContent.includes('Merc'));
+  merc.click();
+  await sleep(60);
+  if (fakeEngine.settings.loadout.car !== 'merc') throw new Error('car not selected');
+  if (!document.body.textContent.includes('47.3 uu')) throw new Error('merc height missing from readout');
+  // paint swatch
+  const sw = document.querySelectorAll('.swatches button');
+  if (sw.length < 40) throw new Error('swatches ' + sw.length);
+  sw[0].click();
+  await sleep(40);
+  if (fakeEngine.settings.loadout.primary !== 0xc8102e) throw new Error('primary ' + fakeEngine.settings.loadout.primary);
+  // finish / wheels / trail / explosion segments
+  const segs = document.querySelectorAll('.seg');
+  if (segs.length < 4) throw new Error('cosmetic segments ' + segs.length);
+  for (const seg of segs) { seg.querySelectorAll('button')[1]?.click(); await sleep(20); }
+  const L = fakeEngine.settings.loadout;
+  if (L.finish === 'glossy' && L.wheels === 'spoke') throw new Error('cosmetics did not change');
+  fakeEngine.settings.loadout = { car: 'octane', primary: 0x1b3f9e, secondary: 0x0e1220, finish: 'glossy', wheels: 'spoke', trail: 'default', explosion: 'default' };
+});
+
+await tryasync('match setup: arena picker + mutators', async () => {
+  renderUi({ type: 'matchSetup' });
+  await sleep(40);
+  const arenaBtns = Array.from(document.querySelectorAll('button')).filter((b) => b.textContent === 'Wasteland');
+  if (!arenaBtns.length) throw new Error('no arena picker');
+  arenaBtns[0].click();
+  await sleep(40);
+  if (fakeEngine.settings.arena !== 'wasteland') throw new Error('arena ' + fakeEngine.settings.arena);
+  // presets
+  const chaos = Array.from(document.querySelectorAll('button')).find((b) => b.textContent === 'Chaos');
+  chaos.click();
+  await sleep(40);
+  const mods = describeMutators(fakeEngine.settings.mutators);
+  if (mods.length < 4) throw new Error('chaos mutators ' + mods.join('|'));
+  if (!document.body.textContent.includes('Ball size: Gigantic')) throw new Error('summary not shown');
+  // advanced panel
+  const adv = Array.from(document.querySelectorAll('button')).find((b) => b.textContent === 'Advanced rules');
+  adv.click();
+  await sleep(40);
+  const fields = document.querySelectorAll('.mut-grid .field');
+  if (fields.length < 10) throw new Error('mutator fields ' + fields.length);
+  Array.from(document.querySelectorAll('button')).find((b) => b.textContent === 'Reset').click();
+  await sleep(30);
+  if (describeMutators(fakeEngine.settings.mutators).length !== 0) throw new Error('reset failed');
+  const start = Array.from(document.querySelectorAll('button')).find((b) => b.textContent === 'Start match');
+  start.click();
+  await sleep(30);
+  if (!fakeEngine.started || !fakeEngine.started.mutators || !fakeEngine.started.loadout) throw new Error('match config missing mutators/loadout');
+  fakeEngine.settings.arena = 'stadium';
+});
+
+await tryasync('rumble HUD: item meter + respawn', async () => {
+  const g = new Game({ mode: 'match', teamSize: 1, difficulty: 'pro', duration: 60, humanTeam: 0, mutators: { rumble: 'normal' } });
+  g.state = 'play';
+  g.human.item = { id: 'tornado', cooldown: 0, timer: 0 };
+  hudStore.setVisible(true);
+  for (let i = 0; i < 10; i++) hudStore.update(g, 1 / 60, input, { ballCam: true, mode: 'play' });
+  await sleep(50);
+  if (!document.querySelector('#hud .item')) throw new Error('no item meter');
+  if (!document.body.textContent.includes('Tornado')) throw new Error('item name missing');
+  g.human.item.cooldown = 5;
+  for (let i = 0; i < 10; i++) hudStore.update(g, 1 / 60, input, { ballCam: true, mode: 'play' });
+  await sleep(50);
+  if (!document.body.textContent.includes('Recharging')) throw new Error('no recharge state');
+  g.human.demolished = true;
+  g.human.respawnTimer = 2.4;
+  for (let i = 0; i < 10; i++) hudStore.update(g, 1 / 60, input, { ballCam: true, mode: 'play' });
+  await sleep(50);
+  if (!document.querySelector('#hud .respawn')) throw new Error('no respawn overlay');
+  hudStore.setVisible(false);
+  await sleep(40);
+});
+
+tryit('xp + rank progression', () => {
+  localStorage.removeItem('rocketgoal.profile.v1');
+  const g = new Game({ mode: 'match', teamSize: 1, difficulty: 'champion', duration: 60, humanTeam: 0 });
+  g.score[0] = 2;
+  g.human.stats.goals = 2;
+  g.human.stats.saves = 1;
+  g.human.stats.score = 260;
+  const st = g.collectStats();
+  const res = awardMatch(st, { mode: 'match', difficulty: 'champion' });
+  if (res.total < 60) throw new Error('xp too low: ' + res.total);
+  if (!res.breakdown.some((b) => b.label === 'Victory')) throw new Error('no victory bonus');
+  if (!res.breakdown.some((b) => b.label.includes('bot skill bonus'))) throw new Error('no difficulty bonus');
+  const p = loadProfile();
+  if (p.xp !== res.total || p.matches !== 1 || p.wins !== 1) throw new Error('profile not saved: ' + JSON.stringify(p));
+  if (levelOf(p.xp) !== res.after.level) throw new Error('level mismatch');
+  // ranks climb
+  const low = rankOf(0);
+  const high = rankOf(20000);
+  if (low.tier !== 'Unranked' || high.tier !== 'Supersonic Legend') throw new Error('ranks ' + low.tier + '/' + high.tier);
+  if (rankOf(1000).tier !== 'Silver') throw new Error('1000 xp should be silver, got ' + rankOf(1000).tier);
+});
+
+await tryasync('results screen shows xp', async () => {
+  const g = new Game({ mode: 'match', teamSize: 1, difficulty: 'pro', duration: 60, humanTeam: 0 });
+  g.score[0] = 1;
+  const st = g.collectStats();
+  const res = awardMatch(st, { mode: 'match', difficulty: 'pro' });
+  renderUi({ type: 'results', stats: st, report: new Coach(g).report(st), config: { mode: 'match' }, xp: res });
+  await sleep(40);
+  if (!document.body.textContent.includes('Match played')) throw new Error('no xp breakdown');
+  if (!document.querySelector('.xp-bar')) throw new Error('no xp bar');
+});
+
 tryit('input update', () => {
   const c = input.update();
   if (typeof c.throttle !== 'number') throw new Error('controls');

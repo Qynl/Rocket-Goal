@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { CAR, GRAVITY, throttleAccel, turnCurvature, ARENA } from '../constants.js';
+import { resolveSpec } from '../cars.js';
 import { ALL_PLANES, nearestSurface, collideSphere } from './arena.js';
 import { clamp, UP, lookQuat } from '../math.js';
 
@@ -24,17 +25,22 @@ export function defaultControls() {
     jump: false,
     boost: false,
     handbrake: false,
+    useItem: false, // Rumble power-up button
   };
 }
 
 let nextCarId = 1;
 
 export class Car {
-  constructor(team, name = 'Car', isBot = false) {
+  constructor(team, name = 'Car', isBot = false, spec = null) {
     this.id = nextCarId++;
     this.team = team;
     this.name = name;
     this.isBot = isBot;
+    // Garage loadout: car model (== hitbox class) + cosmetics.
+    this.spec = resolveSpec(spec || {});
+    this.hitbox = this.spec.hitbox;
+    this.modelName = this.spec.preset.name;
     this.pos = new THREE.Vector3(0, CAR.REST_HEIGHT, 0);
     this.vel = new THREE.Vector3();
     this.quat = new THREE.Quaternion();
@@ -70,6 +76,12 @@ export class Car {
     this.airRollActive = false;
 
     // stats
+    // mutator-tunable values (see mutators.js); defaults match standard rules
+    this.boostAccel = CAR.BOOST_ACCEL;
+    this.maxSpeed = CAR.MAX_SPEED;
+    this.boostRecharge = 0; // uu of boost regenerated per second
+    this.item = null; // Rumble power-up state { id, cooldown, timer }
+
     this.stats = {
       boostUsed: 0,
       boostCollected: 0,
@@ -120,13 +132,10 @@ export class Car {
     return this.vel.dot(this.getForward(_tmp2));
   }
   get hitboxCenter() {
-    return _tmp
-      .set(CAR.HITBOX_OFFSET.x, CAR.HITBOX_OFFSET.y, CAR.HITBOX_OFFSET.z)
-      .applyQuaternion(this.quat)
-      .add(this.pos);
+    return _tmp.set(this.hitbox.offset.x, this.hitbox.offset.y, this.hitbox.offset.z).applyQuaternion(this.quat).add(this.pos);
   }
   getHitboxCenter(out = new THREE.Vector3()) {
-    return out.set(CAR.HITBOX_OFFSET.x, CAR.HITBOX_OFFSET.y, CAR.HITBOX_OFFSET.z).applyQuaternion(this.quat).add(this.pos);
+    return out.set(this.hitbox.offset.x, this.hitbox.offset.y, this.hitbox.offset.z).applyQuaternion(this.quat).add(this.pos);
   }
 
   setPose(x, z, yaw, boost = 33) {
@@ -149,9 +158,9 @@ export class Car {
     this.prevJump = false;
   }
 
-  demolish() {
+  demolish(respawnTime = CAR.RESPAWN_TIME) {
     this.demolished = true;
-    this.respawnTimer = CAR.RESPAWN_TIME;
+    this.respawnTimer = respawnTime;
     this.vel.set(0, 0, 0);
     this.angVel.set(0, 0, 0);
     this.pos.set(0, -5000, 0); // hide
@@ -225,22 +234,25 @@ export class Car {
 
     // ---- boost -------------------------------------------------------------
     this.boostActive = false;
+    if (this.boostRecharge > 0 && this.boost < CAR.MAX_BOOST) {
+      this.boost = Math.min(CAR.MAX_BOOST, this.boost + this.boostRecharge * dt);
+    }
     if (c.boost && this.boost > 0) {
       this.boostActive = true;
       const f = this.getForward(_fwd);
       // boost only accelerates up to max speed
-      if (this.vel.dot(f) < CAR.MAX_SPEED || this.speed < CAR.MAX_SPEED) {
-        this.vel.addScaledVector(f, CAR.BOOST_ACCEL * dt);
+      if (this.vel.dot(f) < this.maxSpeed || this.speed < this.maxSpeed) {
+        this.vel.addScaledVector(f, this.boostAccel * dt);
       }
       const used = Math.min(this.boost, CAR.BOOST_CONSUMPTION * dt);
       this.boost -= used;
       s.boostUsed += used;
-      if (this.speed >= CAR.MAX_SPEED - 5 && this.onGround) s.wastedBoost += used;
+      if (this.speed >= this.maxSpeed - 5 && this.onGround) s.wastedBoost += used;
     }
 
     // ---- speed clamp -------------------------------------------------------
     const spd = this.vel.length();
-    if (spd > CAR.MAX_SPEED) this.vel.multiplyScalar(CAR.MAX_SPEED / spd);
+    if (spd > this.maxSpeed) this.vel.multiplyScalar(this.maxSpeed / spd);
     const ws = this.angVel.length();
     const maxW = this.flipping ? CAR.FLIP_ANGULAR_SPEED + 1 : CAR.MAX_ANGULAR;
     if (ws > maxW) this.angVel.multiplyScalar(maxW / ws);
@@ -256,7 +268,7 @@ export class Car {
       _q.setFromAxisAngle(_tmp.copy(this.angVel).multiplyScalar(1 / w), w * dt);
       this.quat.premultiply(_q).normalize();
       if (!this.onGround) {
-        _tmp.set(CAR.HITBOX_OFFSET.x, CAR.HITBOX_OFFSET.y, CAR.HITBOX_OFFSET.z).applyQuaternion(this.quat);
+        _tmp.set(this.hitbox.offset.x, this.hitbox.offset.y, this.hitbox.offset.z).applyQuaternion(this.quat);
         this.pos.copy(centre).sub(_tmp);
       }
     }
@@ -491,9 +503,9 @@ export class Car {
   collideBody(dt) {
     // Treat the car as a small set of spheres along its hitbox for arena collisions
     // (keeps the nose out of walls, lets the roof/side bounce).
-    const h = CAR.HITBOX_HALF;
-    const o = CAR.HITBOX_OFFSET;
-    const r = 14;
+    const h = this.hitbox.half;
+    const o = this.hitbox.offset;
+    const r = Math.min(14, h.y * 0.78);
     const pts = [
       [0, 0, h.z - r],
       [0, 0, -h.z + r],

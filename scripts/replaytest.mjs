@@ -18,6 +18,8 @@ console.log('scene NaN verts', nan, 'triangles', Math.round(tris));
 // goal + replay
 const g = new Game({ mode: 'match', teamSize: 1, difficulty: 'rookie', duration: 60, humanTeam: 0, replays: true });
 g.state = 'play'; g.ball.frozen = false; g.stateTimer = 0;
+// deterministic goal: no bots to block the shot (bots now drive random cars/hitboxes)
+g.bots.length = 0; g.cars = [g.human];
 const view = { ballCam: true, rearView: false, followCar: g.human, mode: 'play', snap: true };
 let replayFrames = 0, goalSeen = false, replayStarted = false;
 g.on('goal', () => (goalSeen = true));

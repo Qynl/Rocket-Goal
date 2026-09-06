@@ -1,4 +1,5 @@
 import { ARENA, TEAM, CAR } from '../constants.js';
+import { ITEMS } from '../rumble.js';
 
 /**
  * Framework-agnostic HUD state. The engine writes here every frame; React
@@ -33,6 +34,11 @@ export class HudStore {
       supersonic: false,
       speedBar: 0,
       pills: [],
+      item: null, // Rumble power-up {icon, name, ready, frac, active}
+      respawn: null, // seconds until the player's car comes back
+      mutators: [],
+      arena: '',
+      rumble: false,
       message: null, // {html, cls}
       coach: null, // html
       drill: null, // {icon, name, lines, acc, message}
@@ -171,14 +177,33 @@ export class HudStore {
       const sp = Math.round(human.speed);
       snap.speed = sp;
       snap.supersonic = human.supersonic;
-      snap.speedBar = Math.min(100, (sp / CAR.MAX_SPEED) * 100);
+      snap.speedBar = Math.min(100, (sp / (human.maxSpeed || CAR.MAX_SPEED)) * 100);
       const pills = [];
       pills.push(`<span class="pill ${view.ballCam ? 'on' : ''}">${view.ballCam ? 'Ball cam' : 'Car cam'}</span>`);
       if (!human.onGround) pills.push(`<span class="pill ${human.hasFlip ? 'flip' : ''}">${human.hasFlip ? 'Flip ready' : 'No flip'}</span>`);
       if (human.supersonic) pills.push('<span class="pill on">Supersonic</span>');
       if (input.usingGamepad) pills.push('<span class="pill">Gamepad</span>');
       snap.pills = pills;
+      snap.respawn = human.demolished ? Math.max(0, human.respawnTimer) : null;
+      // Rumble power-up meter
+      if (game.rumble && human.item) {
+        const info = ITEMS[human.item.id] || { icon: '?', name: human.item.id };
+        const cd = game.rumble.cooldown || 10;
+        snap.item = {
+          icon: info.icon,
+          name: info.name,
+          ready: human.item.cooldown <= 0,
+          frac: human.item.cooldown > 0 ? Math.max(0, 1 - human.item.cooldown / cd) : 1,
+          active: human.item.timer > 0,
+          blurb: info.blurb,
+        };
+      } else if (snap.item) snap.item = null;
       this.live.vignette = human.supersonic ? 0.55 : human.boostActive ? 0.25 : 0;
+    }
+    if (this._mutGame !== game) {
+      this._mutGame = game;
+      snap.mutators = game.mutatorSummary || [];
+      snap.rumble = !!game.rumble;
     }
 
     // countdown overrides the centre message

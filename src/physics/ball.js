@@ -9,19 +9,62 @@ const _rel = new THREE.Vector3();
 const _tmp = new THREE.Vector3();
 
 export class Ball {
-  constructor() {
-    this.pos = new THREE.Vector3(0, BALL.RADIUS, 0);
+  /**
+   * @param cfg partial override of the BALL constants — mutators pass
+   *   {radius, mass, restitution, friction, drag, maxSpeed, maxAng, puck}.
+   */
+  constructor(cfg = {}) {
+    this.config = {
+      radius: BALL.RADIUS,
+      mass: BALL.MASS,
+      maxSpeed: BALL.MAX_SPEED,
+      maxAng: BALL.MAX_ANG,
+      restitution: BALL.RESTITUTION,
+      friction: BALL.FRICTION,
+      drag: BALL.DRAG,
+      puck: false,
+      ...cfg,
+    };
+    this.pos = new THREE.Vector3(0, this.config.radius, 0);
     this.vel = new THREE.Vector3();
     this.angVel = new THREE.Vector3();
     this.quat = new THREE.Quaternion();
-    this.radius = BALL.RADIUS;
+    this.radius = this.config.radius;
+    this.mass = this.config.mass;
+    this.restitution = this.config.restitution;
+    this.friction = this.config.friction;
+    this.drag = this.config.drag;
+    this.maxSpeed = this.config.maxSpeed;
+    this.maxAng = this.config.maxAng;
     this.lastTouch = null; // { car, time, team }
     this.onGround = false;
     this.frozen = false;
   }
 
+  /** Retune a live ball (mutators) without moving it. */
+  applyConfig(cfg = {}) {
+    this.config = {
+      radius: BALL.RADIUS,
+      mass: BALL.MASS,
+      maxSpeed: BALL.MAX_SPEED,
+      maxAng: BALL.MAX_ANG,
+      restitution: BALL.RESTITUTION,
+      friction: BALL.FRICTION,
+      drag: BALL.DRAG,
+      puck: false,
+      ...cfg,
+    };
+    this.radius = this.config.radius;
+    this.mass = this.config.mass;
+    this.restitution = this.config.restitution;
+    this.friction = this.config.friction;
+    this.drag = this.config.drag;
+    this.maxSpeed = this.config.maxSpeed;
+    this.maxAng = this.config.maxAng;
+  }
+
   reset(pos = null) {
-    this.pos.set(0, BALL.RADIUS, 0);
+    this.pos.set(0, this.radius, 0);
     if (pos) this.pos.copy(pos);
     this.vel.set(0, 0, 0);
     this.angVel.set(0, 0, 0);
@@ -34,7 +77,7 @@ export class Ball {
     if (this.frozen) return;
     // gravity + drag
     this.vel.y -= GRAVITY * dt;
-    this.vel.multiplyScalar(1 - BALL.DRAG * dt);
+    this.vel.multiplyScalar(1 - this.drag * dt);
     this.pos.addScaledVector(this.vel, dt);
 
     // arena collisions
@@ -52,11 +95,11 @@ export class Ball {
         // real bounce: normal restitution + tangential friction that converts slip into spin
         _rel.crossVectors(this.angVel, _tmp.copy(c.n).multiplyScalar(-this.radius)).add(this.vel);
         _vt.copy(_rel).sub(_tmp.copy(c.n).multiplyScalar(_rel.dot(c.n)));
-        this.vel.addScaledVector(c.n, -(1 + BALL.RESTITUTION) * vn);
+        this.vel.addScaledVector(c.n, -(1 + this.restitution) * vn);
         const slip = _vt.length();
         if (slip > 1e-3) {
           // impulse limited by friction cone; solid-sphere split between linear and angular
-          const maxJ = BALL.FRICTION * Math.abs(vn) * (1 + BALL.RESTITUTION);
+          const maxJ = this.friction * Math.abs(vn) * (1 + this.restitution);
           const j = Math.min(slip * (2 / 7), maxJ);
           // Ramps (floor/wall curves) deflect the ball sideways less than a flat wall would
           void c.kind;
@@ -87,9 +130,9 @@ export class Ball {
 
     // clamp speeds
     const s = this.vel.length();
-    if (s > BALL.MAX_SPEED) this.vel.multiplyScalar(BALL.MAX_SPEED / s);
+    if (s > this.maxSpeed) this.vel.multiplyScalar(this.maxSpeed / s);
     const w = this.angVel.length();
-    if (w > BALL.MAX_ANG) this.angVel.multiplyScalar(BALL.MAX_ANG / w);
+    if (w > this.maxAng) this.angVel.multiplyScalar(this.maxAng / w);
 
     // integrate rotation
     if (w > 1e-5) {
@@ -114,7 +157,7 @@ export class Ball {
    * Predict future ball state ignoring cars. Returns array of {t, pos, vel} samples.
    */
   predict(duration, step = 1 / 30) {
-    const sim = new Ball();
+    const sim = new Ball(this.config);
     sim.pos.copy(this.pos);
     sim.vel.copy(this.vel);
     sim.angVel.copy(this.angVel);

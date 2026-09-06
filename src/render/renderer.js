@@ -8,6 +8,7 @@ import { buildArena } from './arenaMesh.js';
 import { buildCarMesh } from './carMesh.js';
 import { ARENA, BALL, TEAM_COLORS, CAR, BOOST_PAD } from '../constants.js';
 import { clamp, lerp } from '../math.js';
+import { arenaById } from '../arenas.js';
 
 const _v = new THREE.Vector3();
 const _v2 = new THREE.Vector3();
@@ -25,9 +26,8 @@ export const CAMERA_PRESETS = {
   wide: { fov: 110, distance: 300, height: 120, angle: -5, stiffness: 0.35, swivel: 4, transition: 1.2 },
 };
 
-const SKY_TOP = new THREE.Color(0x070d1f);
-const SKY_MID = new THREE.Color(0x12204a);
-const SKY_BOTTOM = new THREE.Color(0x2a4470);
+// Default arena theme (the menu and every match start here)
+const DEFAULT_THEME = 'stadium';
 
 /** Vignette + saturation + edge chromatic aberration grade. */
 const GradeShader = {
@@ -73,10 +73,12 @@ export class Renderer {
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
     this.renderer.toneMappingExposure = 1.05;
     this.isStub = !!glRenderer;
+    this.themeName = DEFAULT_THEME;
+    this.theme = arenaById(DEFAULT_THEME);
 
     this.scene = new THREE.Scene();
-    this.scene.background = SKY_TOP.clone();
-    this.scene.fog = new THREE.Fog(0x16264c, 14000, 42000);
+    this.scene.background = new THREE.Color(this.theme.sky.top);
+    this.scene.fog = new THREE.Fog(this.theme.fog.color, this.theme.fog.near, this.theme.fog.far);
 
     this.camera = new THREE.PerspectiveCamera(90, 1, 5, 60000);
     this.camState = {
@@ -97,10 +99,11 @@ export class Renderer {
     this.setupLights();
     if (!this.isStub) this.buildEnvironment();
     this.buildSky();
-    const arena = buildArena();
+    const arena = buildArena(this.theme);
     this.arena = arena;
     this.scene.add(arena.group);
     this.buildStadium();
+    this.showcase = null; // garage preview car (drawn while a menu is open)
 
     // ball
     this.ballMesh = this.buildBall();
@@ -198,6 +201,67 @@ export class Renderer {
     this.onResize();
   }
 
+  /**
+   * Swap arenas. Rebuilds the arena group (walls/floor/pads are themed) and
+   * retints sky, lights, fog, stands and crowd. Called from the menu.
+   */
+  setArenaTheme(id) {
+    const theme = arenaById(id);
+    if (theme.id === this.themeName) return;
+    this.themeName = theme.id;
+    this.theme = theme;
+
+    // arena group: dispose and rebuild with the new colours
+    this.scene.remove(this.arena.group);
+    this.arena.group.traverse((o) => {
+      if (o.geometry) o.geometry.dispose();
+      if (o.material) (Array.isArray(o.material) ? o.material : [o.material]).forEach((m) => m.dispose && m.dispose());
+    });
+    this.arena = buildArena(theme);
+    this.scene.add(this.arena.group);
+
+    // sky / fog / tone
+    this.scene.background = new THREE.Color(theme.sky.top);
+    this.scene.fog.color.setHex(theme.fog.color);
+    this.scene.fog.near = theme.fog.near;
+    this.scene.fog.far = theme.fog.far;
+    this.renderer.toneMappingExposure = theme.exposure;
+    if (this.skyMat) {
+      this.skyMat.uniforms.top.value.setHex(theme.sky.top);
+      this.skyMat.uniforms.mid.value.setHex(theme.sky.mid);
+      this.skyMat.uniforms.bottom.value.setHex(theme.sky.bottom);
+    }
+    if (this.stars) this.stars.material.opacity = theme.stars;
+    if (this.moon) {
+      this.moon.visible = theme.stars > 0.1;
+      this.moonGlow.visible = theme.stars > 0.1;
+    }
+
+    // lights
+    if (this.hemi) {
+      this.hemi.color.setHex(theme.hemi.sky);
+      this.hemi.groundColor.setHex(theme.hemi.ground);
+      this.hemi.intensity = theme.hemi.intensity;
+    }
+    if (this.sun) {
+      this.sun.color.setHex(theme.sun.color);
+      this.sun.intensity = theme.sun.intensity;
+      this.sun.position.set(...theme.sun.pos);
+    }
+    if (this.fill) {
+      this.fill.color.setHex(theme.fill.color);
+      this.fill.intensity = theme.fill.intensity;
+    }
+
+    // stands / crowd / outer floor
+    if (this.seatMats) this.seatMats.forEach((m, i) => m.color.setHex(theme.seat[i % theme.seat.length]));
+    if (this.groundMat) this.groundMat.color.setHex(theme.ground);
+    if (this.crowd) {
+      this.crowd.material.color.setHex(theme.crowd);
+      this.crowd.visible = true;
+    }
+  }
+
   disposeComposer() {
     if (!this.composer) return;
     this.composer.dispose && this.composer.dispose();
@@ -206,10 +270,12 @@ export class Renderer {
 
   // ------------------------------------------------------------------ light
   setupLights() {
-    const hemi = new THREE.HemisphereLight(0xbfd4ff, 0x141c2c, 0.85);
+    const t = this.theme;
+    const hemi = new THREE.HemisphereLight(t.hemi.sky, t.hemi.ground, t.hemi.intensity);
     this.scene.add(hemi);
-    const sun = new THREE.DirectionalLight(0xfff2dd, 1.9);
-    sun.position.set(2600, 7000, -2800);
+    this.hemi = hemi;
+    const sun = new THREE.DirectionalLight(t.sun.color, t.sun.intensity);
+    sun.position.set(...t.sun.pos);
     sun.castShadow = true;
     sun.shadow.mapSize.set(4096, 4096);
     sun.shadow.camera.left = -6500;
@@ -222,9 +288,10 @@ export class Renderer {
     sun.shadow.normalBias = 3;
     this.scene.add(sun);
     this.sun = sun;
-    const fill = new THREE.DirectionalLight(0x86a8ff, 0.5);
+    const fill = new THREE.DirectionalLight(t.fill.color, t.fill.intensity);
     fill.position.set(-3000, 3200, 4000);
     this.scene.add(fill);
+    this.fill = fill;
     const fill2 = new THREE.DirectionalLight(0xffd9b0, 0.25);
     fill2.position.set(2000, 2400, 6000);
     this.scene.add(fill2);
@@ -288,14 +355,15 @@ export class Renderer {
   // ------------------------------------------------------------------ sky
   buildSky() {
     // gradient dome
+    const t = this.theme;
     const skyMat = new THREE.ShaderMaterial({
       side: THREE.BackSide,
       depthWrite: false,
       fog: false,
       uniforms: {
-        top: { value: SKY_TOP.clone() },
-        mid: { value: SKY_MID.clone() },
-        bottom: { value: SKY_BOTTOM.clone() },
+        top: { value: new THREE.Color(t.sky.top) },
+        mid: { value: new THREE.Color(t.sky.mid) },
+        bottom: { value: new THREE.Color(t.sky.bottom) },
       },
       vertexShader: `varying vec3 vDir; void main(){ vDir = normalize(position); gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }`,
       fragmentShader: `
@@ -311,6 +379,7 @@ export class Renderer {
     const sky = new THREE.Mesh(new THREE.SphereGeometry(52000, 32, 20), skyMat);
     sky.frustumCulled = false;
     this.scene.add(sky);
+    this.skyMat = skyMat;
 
     // stars (upper hemisphere only, additive)
     const N = 1600;
@@ -325,15 +394,17 @@ export class Renderer {
     }
     const starGeo = new THREE.BufferGeometry();
     starGeo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
-    this.stars = new THREE.Points(starGeo, new THREE.PointsMaterial({ color: 0xcfe0ff, size: 90, sizeAttenuation: true, transparent: true, opacity: 0.75, fog: false, depthWrite: false }));
+    this.stars = new THREE.Points(starGeo, new THREE.PointsMaterial({ color: 0xcfe0ff, size: 90, sizeAttenuation: true, transparent: true, opacity: t.stars, fog: false, depthWrite: false }));
     this.scene.add(this.stars);
 
     // moon
-    const moon = new THREE.Mesh(new THREE.CircleGeometry(1800, 32), new THREE.MeshBasicMaterial({ color: 0xdfe8ff, fog: false, toneMapped: false }));
+    this.moon = new THREE.Mesh(new THREE.CircleGeometry(1800, 32), new THREE.MeshBasicMaterial({ color: 0xdfe8ff, fog: false, toneMapped: false }));
+    const moon = this.moon;
     moon.position.set(-19000, 22000, 26000);
     moon.lookAt(0, 0, 0);
     this.scene.add(moon);
     const moonGlow = new THREE.Mesh(new THREE.CircleGeometry(3600, 32), new THREE.MeshBasicMaterial({ color: 0x8fa8dd, transparent: true, opacity: 0.25, fog: false, blending: THREE.AdditiveBlending, depthWrite: false }));
+    this.moonGlow = moonGlow;
     moonGlow.position.copy(moon.position).multiplyScalar(0.999);
     moonGlow.lookAt(0, 0, 0);
     this.scene.add(moonGlow);
@@ -391,7 +462,8 @@ export class Renderer {
     const R = ARENA.HALF_WIDTH + 700;
     const L = ARENA.HALF_LENGTH + 700;
     const tiers = 16;
-    const seatMats = [0x27365e, 0x2e3a5c, 0x223055, 0x33406b].map((c) => new THREE.MeshStandardMaterial({ color: c, roughness: 0.95, metalness: 0.05 }));
+    const seatMats = this.theme.seat.map((c) => new THREE.MeshStandardMaterial({ color: c, roughness: 0.95, metalness: 0.05 }));
+    this.seatMats = seatMats;
     const fasciaMat = new THREE.MeshStandardMaterial({ color: 0x1a2136, roughness: 0.6, metalness: 0.3 });
     const ledMat = new THREE.MeshBasicMaterial({ color: 0x2fa9ff, toneMapped: false });
     for (let t = 0; t < tiers; t++) {
@@ -429,7 +501,8 @@ export class Renderer {
       }
     }
     // outer floor
-    const ground = new THREE.Mesh(new THREE.PlaneGeometry(90000, 90000), new THREE.MeshStandardMaterial({ color: 0x0d1018, roughness: 1 }));
+    const ground = new THREE.Mesh(new THREE.PlaneGeometry(90000, 90000), new THREE.MeshStandardMaterial({ color: this.theme.ground, roughness: 1 }));
+    this.groundMat = ground.material;
     ground.rotation.x = -Math.PI / 2;
     ground.position.y = -3;
     group.add(ground);
@@ -700,7 +773,7 @@ export class Renderer {
   getCarMesh(car) {
     let m = this.carMeshes.get(car.id);
     if (!m) {
-      m = buildCarMesh(TEAM_COLORS[car.team], !car.isBot);
+      m = buildCarMesh(car.spec, !car.isBot, TEAM_COLORS[car.team]);
       this.scene.add(m.group);
       m.tag = this.makeTag(car.name, TEAM_COLORS[car.team]);
       this.scene.add(m.tag);
@@ -761,6 +834,11 @@ export class Renderer {
     const ball = game.ball;
     const replay = game.replayState ? game.replayState() : null;
 
+    // garage showcase: only the car on the turntable is drawn
+    this.showcaseMode = !!(this.showcase && !game.cars.length);
+    if (this.showcaseMode) {
+      game = { ...game, cars: [this.showcase.car], prediction: [], drill: null, score: null, clock: Infinity };
+    }
     // ball + cars: from replay buffer while a replay plays, otherwise live
     if (replay) this.applyReplay(game, replay);
     else {
@@ -768,15 +846,35 @@ export class Renderer {
       this.ballMesh.quaternion.copy(ball.quat);
       for (const car of game.cars) this.applyCarLive(car, view, dt);
     }
+    // ball mutators: size scales the mesh, a puck also squashes and darkens it
+    if (game.ball && game.ball.config) {
+      const k = game.ball.radius / BALL.RADIUS;
+      const puck = !!game.ball.config.puck;
+      this.ballMesh.scale.set(k, puck ? k * 0.38 : k, k);
+      if (this.ballIsPuck !== puck) {
+        this.ballIsPuck = puck;
+        this.ballMat.color.setHex(puck ? 0x14161c : 0xffffff);
+        this.ballMat.roughness = puck ? 0.5 : 0.32;
+        this.ballMat.metalness = puck ? 0.25 : 0.42;
+      }
+    }
+    this.ballMesh.visible = !this.showcaseMode;
     const bp = this.ballMesh.position;
+    this.ballShadow.visible = !this.showcaseMode;
     this.ballShadow.position.set(bp.x, 1.5, bp.z);
     const sh = clamp(1 - bp.y / 2200, 0.25, 1);
     this.ballShadow.scale.set(sh, sh, 1);
     this.ballShadow.material.opacity = 0.42 * sh;
-    this.updateTrail(this.ballTrail, bp, 60, !replay && ball.vel.length() > 1800);
+    // RL tints the ball trail with the team that touched it last
+    const lastTeam = ball.lastTouch ? ball.lastTouch.team : -1;
+    if (lastTeam >= 0 && this.ballTrailTeam !== lastTeam) {
+      this.ballTrailTeam = lastTeam;
+      this.ballTrail.mat.uniforms.color.value.setHex(TEAM_COLORS[lastTeam]);
+    }
+    this.updateTrail(this.ballTrail, bp, 60, !replay && (ball.vel.length() > 1700 || ball.pos.y > 400));
     this.ballIndicator.position.set(bp.x, bp.y + BALL.RADIUS + 80 + Math.sin(this.clock * 5) * 8, bp.z);
     this.ballIndicator.rotation.y += dt * 2;
-    this.ballIndicator.visible = !replay;
+    this.ballIndicator.visible = !replay && !this.showcase;
     // ball glow seams fade after touches
     if (this.ballGlow > 0) {
       this.ballGlow = Math.max(0, this.ballGlow - dt * 1.6);
@@ -1033,6 +1131,20 @@ export class Renderer {
     }
 
     if (view.mode === 'goalReplay' || !car) {
+      if (this.showcase) {
+        // garage turntable: tight orbit around the selected car
+        const t = this.clock * 0.5;
+        const target = _v.copy(this.showcase.car.pos).add(_v4.set(0, 40, 0));
+        const desired = _v2.set(Math.sin(t) * 420, 190, Math.cos(t) * 420).add(target);
+        st.pos.lerp(desired, 1 - Math.exp(-4 * dt));
+        cam.position.copy(st.pos);
+        st.look.lerp(target, 1 - Math.exp(-8 * dt));
+        cam.lookAt(st.look);
+        st.fov = lerp(st.fov, 46, 1 - Math.exp(-4 * dt));
+        cam.fov = st.fov;
+        cam.updateProjectionMatrix();
+        return;
+      }
       // slow orbit around the ball (menu background / goal celebration)
       const t = this.clock * 0.25;
       const target = _v.copy(bp);
@@ -1356,14 +1468,40 @@ export class Renderer {
     this.shake = Math.max(this.shake, amount * 0.5);
   }
 
-  /** Goal explosion: flash light, shockwave ring, particle burst, light pillar. */
-  goalExplosion(pos, color) {
+  /**
+   * Goal explosion: flash light, shockwave ring, particle burst, light pillar.
+   * `kind` is the player's chosen explosion cosmetic.
+   */
+  goalExplosion(pos, color, kind = 'default') {
     this.goalFlash = 1;
     this.goalFlashColor.setHex(color);
     this.goalLight.position.copy(pos).add(_v.set(0, 300, 0));
-    this.burst(pos, color, 140, 1900, 1.4, 42);
-    this.burst(pos, 0xffffff, 50, 1000, 0.8, 26);
-    this.burst(pos, color, 60, 3200, 1.8, 30);
+    if (kind === 'fireworks') {
+      for (let i = 0; i < 9; i++) {
+        const off = _v2.set((Math.random() - 0.5) * 1600, 700 + Math.random() * 1400, (Math.random() - 0.5) * 1200);
+        const p = _v3.copy(pos).add(off);
+        const c = i % 3 === 0 ? 0xffffff : i % 3 === 1 ? color : TEAM_COLORS[i % 2];
+        setTimeout(() => this.burst(p, c, 60, 1400, 1.5, 34), i * 90);
+      }
+      this.burst(pos, color, 60, 1600, 1.2, 34);
+    } else if (kind === 'confetti') {
+      for (let i = 0; i < 5; i++) {
+        const c = i % 2 ? color : 0xffffff;
+        this.burst(_v2.copy(pos).add(_v3.set((Math.random() - 0.5) * 900, 1200 + Math.random() * 900, (Math.random() - 0.5) * 700)), c, 60, 260, 2.6, 26);
+      }
+      this.burst(pos, color, 80, 1200, 1.6, 30);
+    } else if (kind === 'shockwave') {
+      this.burst(pos, 0xffffff, 220, 3400, 1.3, 54);
+      this.spawnRing(pos, 0xffffff, 2600, 1.1);
+    } else if (kind === 'lightning') {
+      this.burst(pos, 0xdfe9ff, 120, 2400, 1.0, 30);
+      this.goalFlash = 1.6;
+      this.kick(60);
+    } else {
+      this.burst(pos, color, 140, 1900, 1.4, 42);
+      this.burst(pos, 0xffffff, 50, 1000, 0.8, 26);
+      this.burst(pos, color, 60, 3200, 1.8, 30);
+    }
     this.spawnRing(pos, color, 1600, 0.9);
     this.spawnRing(pos, 0xffffff, 900, 0.6);
     this.kick(46);

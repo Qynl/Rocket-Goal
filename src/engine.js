@@ -4,9 +4,12 @@ import { Input } from './input.js';
 import { Audio } from './audio.js';
 import { Coach } from './coach.js';
 import { QuickChat } from './chat.js';
-import { TEAM_COLORS, TEAM_NAMES, BOOST_PADS } from './constants.js';
+import { TEAM_COLORS, TEAM_NAMES, BOOST_PADS, CAR } from './constants.js';
 import { loadSettings, saveSettings } from './ui/settings.js';
 import { Ball } from './physics/ball.js';
+import { Car } from './physics/car.js';
+import { ITEMS } from './rumble.js';
+import { awardMatch } from './progress.js';
 
 /**
  * Game engine controller. Owns the simulation, renderer, input and audio and
@@ -34,8 +37,10 @@ export class Engine {
 
     this.renderer.setCameraSettings(this.settings.camera);
     this.renderer.setQuality(this.settings.quality || 'high');
+    this.renderer.setArenaTheme(this.settings.arena || 'stadium');
     this.renderer.showPrediction = this.settings.showPrediction;
     this.audio.setVolume(this.settings.volume);
+    this.prevUseItem = false;
 
     this.input.onAction = (a) => {
       if (a === 'ballCam') this.audio.ui();
@@ -61,9 +66,27 @@ export class Engine {
     saveSettings(s);
     this.renderer.setCameraSettings(s.camera);
     this.renderer.setQuality(s.quality || 'high');
+    this.renderer.setArenaTheme(s.arena || 'stadium');
     this.renderer.showPrediction = s.showPrediction;
     this.audio.setVolume(s.volume);
     if (this.chat) this.chat.enabled = s.quickChat !== false;
+    if (this.renderer.showcase) this.setGaragePreview(s.loadout);
+  }
+
+  // ---- garage preview (menu turntable) ------------------------------------
+  /** Put a car on the turntable behind the menus so the garage shows the real model. */
+  setGaragePreview(loadout) {
+    const car = new Car(this.settings.humanTeam || 0, this.settings.playerName || 'You', false, loadout || this.settings.loadout);
+    car.setPose(0, 0, Math.PI * 0.25, 100);
+    car.pos.y = CAR.REST_HEIGHT;
+    this.previewCar = car;
+    this.renderer.showcase = { car };
+    return car;
+  }
+
+  clearGaragePreview() {
+    this.previewCar = null;
+    this.renderer.showcase = null;
   }
 
   onKey(code) {
@@ -92,7 +115,16 @@ export class Engine {
 
   startGame(config) {
     this.audio.resume();
-    this.config = { ...config, playerName: this.settings.playerName };
+    this.config = {
+      ...config,
+      playerName: this.settings.playerName,
+      arena: this.settings.arena || 'stadium',
+      loadout: this.settings.loadout,
+      // training packs always run on standard rules; matches honour the mutators
+      mutators: config.mode === 'drill' ? {} : config.mutators || this.settings.mutators,
+    };
+    this.clearGaragePreview();
+    this.renderer.setArenaTheme(this.config.arena);
     this.game = new Game(this.config);
     this.coach = new Coach(this.game);
     this.chat = new QuickChat(this.game, this.hud);
@@ -115,7 +147,12 @@ export class Engine {
         this.settings.showPrediction = true;
       }
     }
-    if (config.mode === 'match') this.hud.addFeed(`${config.teamSize}v${config.teamSize} vs ${this.game.bots[0]?.skill.name || 'bots'} · <b>1–4</b> quick chat`, 4);
+    if (config.mode === 'match') {
+      const rumble = this.game.rumble ? ' · <b>RUMBLE</b> — <b>X</b> uses your item' : '';
+      this.hud.addFeed(`${config.teamSize}v${config.teamSize} vs ${this.game.bots[0]?.skill.name || 'bots'} · <b>1–4</b> quick chat${rumble}`, 5);
+      const mods = this.game.mutatorSummary;
+      if (mods.length) this.hud.addFeed(`Mutators: ${mods.join(' · ')}`, 6);
+    }
     this.running = true;
     this.lastTime = performance.now();
   }
@@ -129,7 +166,7 @@ export class Engine {
       this.hud.addFeed(`<b>${who}</b> scored for ${team}`, 5);
       const scored = g.human ? e.team === g.human.team : true;
       this.audio.goal(scored);
-      this.renderer.goalExplosion(g.ball.pos, TEAM_COLORS[e.team]);
+      this.renderer.goalExplosion(g.ball.pos, TEAM_COLORS[e.team], (e.scorer && e.scorer.spec.explosion.id) || 'default');
       this.view.mode = 'goalReplay';
     });
     g.on('replayStart', () => {
@@ -169,6 +206,27 @@ export class Engine {
       if (mine || (teammate && e.points >= 50)) this.hud.addStat(mine ? e.label : `${e.car.name.toUpperCase()} · ${e.label}`, e.points, mine);
       if (mine && e.points >= 20 && e.kind !== 'goal') this.audio.ui();
     });
+    g.on('rumbleUse', (e) => {
+      const info = ITEMS[e.id] || { name: e.id, icon: '❔' };
+      const color = e.car === g.human ? 0xffffff : TEAM_COLORS[e.car.team];
+      this.renderer.spawnRing(e.pos, color, 260, 0.5);
+      this.renderer.burst(e.pos, color, 30, 700, 0.5, 16);
+      if (e.car === g.human) {
+        this.audio.ui();
+        this.hud.addFeed(`${info.icon} <b>${info.name}</b>`, 2.5);
+      }
+      if (e.id === 'tornado') this.renderer.kick(26);
+      if (e.id === 'swapper') this.renderer.kick(14);
+    });
+    g.on('rumbleHit', (e) => {
+      this.renderer.burst(e.pos, 0xffffff, 90, 2600, 1.0, 40);
+      this.renderer.spawnRing(e.pos, 0xffe08a, 900, 0.7);
+      this.renderer.kick(34);
+      this.audio.ballHit(3000, e.car === g.human);
+    });
+    g.on('rumbleEnd', (e) => {
+      if (e.car === g.human) this.renderer.spawnRing(e.car.pos, 0x9fd8ff, 120, 0.3);
+    });
     g.on('overtime', () => {
       this.hud.showMessage('OVERTIME<small>NEXT GOAL WINS</small>', '', 3);
       this.audio.whistle();
@@ -192,7 +250,15 @@ export class Engine {
       const report = this.coach.report(e.stats);
       this.recordMatch(e.stats);
       const cfg = this.config;
-      setTimeout(() => this.ui({ type: 'results', stats: e.stats, report, config: cfg }), 1200);
+      // local progression: XP, level and season rank
+      let xp = null;
+      try {
+        xp = awardMatch(e.stats, cfg);
+        if (xp.rankUp) this.hud.showMessage(`RANK UP<small>${xp.after.rank.label}</small>`, 'blue', 3);
+      } catch (err) {
+        xp = null;
+      }
+      setTimeout(() => this.ui({ type: 'results', stats: e.stats, report, config: cfg, xp }), 1200);
       this.hud.showMessage(e.score[0] === e.score[1] ? 'DRAW' : `${TEAM_NAMES[e.score[0] > e.score[1] ? 0 : 1]} WINS`, e.score[0] > e.score[1] ? 'blue' : 'orange', 3);
       this.audio.whistle();
     });
@@ -293,7 +359,15 @@ export class Engine {
     if (g) {
       const controls = this.input.update();
       if (g.human && !g.paused) {
+        const pressedItem = !!controls.useItem && !this.prevUseItem;
+        this.prevUseItem = !!controls.useItem;
         Object.assign(g.human.controls, controls);
+        if (pressedItem && g.rumble) {
+          const id = g.useItem(g.human);
+          if (!id && g.human.item && g.human.item.cooldown > 0) this.audio.ui();
+        }
+      } else {
+        this.prevUseItem = false;
       }
       if (!g.paused) {
         g.update(dt);

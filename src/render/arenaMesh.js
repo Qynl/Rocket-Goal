@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { ARENA, BOOST_PADS, BOOST_PAD, TEAM_COLORS } from '../constants.js';
+import { arenaById } from '../arenas.js';
 
 const A = ARENA;
 const R = A.RAMP_RADIUS;
@@ -15,23 +16,25 @@ function canvas(w, h) {
   return cv;
 }
 
-function makeFloorTexture() {
+function makeFloorTexture(theme) {
   const size = 2048;
   const cv = canvas(size, size);
   const ctx = cv.getContext('2d');
-  // base pitch green
+  const f = theme.field;
+  // base pitch colour (grass, dirt or sand depending on the arena)
   const grad = ctx.createLinearGradient(0, 0, 0, size);
-  grad.addColorStop(0, '#1f6b38');
-  grad.addColorStop(0.5, '#1a5d30');
-  grad.addColorStop(1, '#1f6b38');
+  grad.addColorStop(0, f.c1);
+  grad.addColorStop(0.5, f.c2);
+  grad.addColorStop(1, f.c1);
   ctx.fillStyle = grad;
   ctx.fillRect(0, 0, size, size);
   // mowing stripes (two directions -> checker, like DFH)
   const bands = 8;
+  const k = f.stripe;
   for (let i = 0; i < bands; i++) {
-    ctx.fillStyle = i % 2 ? 'rgba(255,255,255,0.055)' : 'rgba(0,0,0,0.075)';
+    ctx.fillStyle = i % 2 ? `rgba(255,255,255,${0.055 * k})` : `rgba(0,0,0,${0.075 * k})`;
     ctx.fillRect(0, (i * size) / bands, size, size / bands);
-    ctx.fillStyle = i % 2 ? 'rgba(255,255,255,0.028)' : 'rgba(0,0,0,0.034)';
+    ctx.fillStyle = i % 2 ? `rgba(255,255,255,${0.028 * k})` : `rgba(0,0,0,${0.034 * k})`;
     ctx.fillRect((i * size) / bands, 0, size / bands, size);
   }
   // grass noise
@@ -369,13 +372,14 @@ function addLine(group, x1, z1, x2, z2, width = 18, y = 0.8) {
 }
 
 // ---------------------------------------------------------------------------
-export function buildArena() {
+export function buildArena(themeId = 'stadium') {
+  const theme = typeof themeId === 'string' ? arenaById(themeId) : themeId;
   const group = new THREE.Group();
   const H = A.HEIGHT;
   const animated = { leds: [], ads: [], beams: [], goalGlow: [] };
 
   // ---- floor -------------------------------------------------------------
-  const floorTex = makeFloorTexture();
+  const floorTex = makeFloorTexture(theme);
   floorTex.repeat.set(2, 2.5);
   const floorMat = new THREE.MeshStandardMaterial({ map: floorTex, roughness: 0.88, metalness: 0.04, envMapIntensity: 0.45 });
   const floor = new THREE.Mesh(new THREE.PlaneGeometry(A.HALF_WIDTH * 2, A.HALF_LENGTH * 2), floorMat);
@@ -394,7 +398,7 @@ export function buildArena() {
   for (const sz of [-1, 1]) {
     const gf = new THREE.Mesh(
       new THREE.PlaneGeometry(A.GOAL_HALF_WIDTH * 2, A.GOAL_DEPTH),
-      new THREE.MeshStandardMaterial({ color: sz < 0 ? 0x10182c : 0x1c130a, roughness: 0.75, metalness: 0.2, envMapIntensity: 0.5 })
+      new THREE.MeshStandardMaterial({ color: theme.goalFloor[sz < 0 ? 0 : 1], roughness: 0.75, metalness: 0.2, envMapIntensity: 0.5 })
     );
     gf.rotation.x = -Math.PI / 2;
     gf.position.set(0, 0, sz * (A.HALF_LENGTH + A.GOAL_DEPTH / 2));
@@ -429,15 +433,15 @@ export function buildArena() {
 
   // ---- walls ---------------------------------------------------------------
   const wallGeo = buildWallGeometry();
-  const panelTex = makePanelTexture();
-  const solidMat = new THREE.MeshStandardMaterial({ map: panelTex, color: 0xb9c2d4, roughness: 0.68, metalness: 0.3, envMapIntensity: 0.8 });
+  const panelTex = makePanelTexture(theme);
+  const solidMat = new THREE.MeshStandardMaterial({ map: panelTex, color: theme.wall.panel, roughness: 0.68, metalness: 0.3, envMapIntensity: 0.8 });
   const solid = new THREE.Mesh(wallGeo.solid, solidMat);
   solid.receiveShadow = true;
   group.add(solid);
   const glassMat = new THREE.MeshPhysicalMaterial({
-    color: 0xaad2ff,
+    color: theme.wall.glass,
     transparent: true,
-    opacity: 0.09,
+    opacity: theme.wall.opacity,
     roughness: 0.06,
     metalness: 0.1,
     clearcoat: 1,
@@ -448,7 +452,7 @@ export function buildArena() {
   group.add(new THREE.Mesh(wallGeo.glass, glassMat));
 
   // glass frame grid
-  const gridMat = new THREE.LineBasicMaterial({ color: 0x7f9dd8, transparent: true, opacity: 0.4 });
+  const gridMat = new THREE.LineBasicMaterial({ color: theme.grid, transparent: true, opacity: 0.4 });
   const gridPts = [];
   const outline = arenaOutline();
   for (let y = SOLID_WALL_TOP; y <= H - R + 1; y += 280) {
@@ -473,7 +477,7 @@ export function buildArena() {
   group.add(new THREE.LineSegments(gridGeo, gridMat));
 
   // ---- trim, LED rails, ad boards -----------------------------------------
-  const trimMat = new THREE.MeshStandardMaterial({ color: 0xdfe6f5, emissive: 0x9fb8ff, emissiveIntensity: 0.5, roughness: 0.35, metalness: 0.55 });
+  const trimMat = new THREE.MeshStandardMaterial({ color: theme.trim.color, emissive: theme.trim.emissive, emissiveIntensity: 0.5, roughness: 0.35, metalness: 0.55 });
   const adTex = makeAdTexture();
   for (let i = 0; i < outline.length; i++) {
     const a = outline[i];
@@ -487,19 +491,19 @@ export function buildArena() {
     group.add(rail);
     // animated LED strip along the rail
     const edge = edges[i];
-    const ledMat = new THREE.MeshBasicMaterial({ color: 0x37c8ff, toneMapped: false });
+    const ledMat = new THREE.MeshBasicMaterial({ color: theme.led, toneMapped: false });
     const led = new THREE.Mesh(new THREE.BoxGeometry(len - R * 0.9, 8, 6), ledMat);
     led.position.set(mid[0] + edge.nx * 8, SOLID_WALL_TOP - 22, mid[1] + edge.nz * 8);
     led.rotation.y = rot;
     group.add(led);
-    animated.leds.push({ mat: ledMat, base: new THREE.Color(0x37c8ff), phase: i * 0.7, edge });
+    animated.leds.push({ mat: ledMat, base: new THREE.Color(theme.led), phase: i * 0.7, edge });
     // LED strip where ramp meets floor
-    const stripMat = new THREE.MeshBasicMaterial({ color: 0x66e0ff, toneMapped: false });
+    const stripMat = new THREE.MeshBasicMaterial({ color: new THREE.Color(theme.led).lerp(new THREE.Color(0xffffff), 0.35), toneMapped: false });
     const strip = new THREE.Mesh(new THREE.BoxGeometry(len - R * 0.9, 4, 12), stripMat);
     strip.position.set(mid[0] + edge.nx * (R + 6), 1.5, mid[1] + edge.nz * (R + 6));
     strip.rotation.y = rot;
     group.add(strip);
-    animated.leds.push({ mat: stripMat, base: new THREE.Color(0x66e0ff), phase: 1.3 + i * 0.5, edge });
+    animated.leds.push({ mat: stripMat, base: stripMat.color.clone(), phase: 1.3 + i * 0.5, edge });
     // ad boards on the long side walls (above the solid wall top edge, behind the glass)
     if (!edge.back && len > 3000) {
       const adMat = new THREE.MeshBasicMaterial({ map: adTex.clone(), toneMapped: false });
@@ -517,10 +521,10 @@ export function buildArena() {
   const ceilShape = ringShape(wallGeo.topRing);
   const ceilGeo = new THREE.ShapeGeometry(ceilShape);
   ceilGeo.rotateX(Math.PI / 2);
-  const ceil = new THREE.Mesh(ceilGeo, new THREE.MeshStandardMaterial({ color: 0x151b28, roughness: 0.9, metalness: 0.15, side: THREE.DoubleSide }));
+  const ceil = new THREE.Mesh(ceilGeo, new THREE.MeshStandardMaterial({ color: theme.ceil, roughness: 0.9, metalness: 0.15, side: THREE.DoubleSide }));
   ceil.position.y = H;
   group.add(ceil);
-  const lightMat = new THREE.MeshBasicMaterial({ color: 0xf4f8ff, toneMapped: false });
+  const lightMat = new THREE.MeshBasicMaterial({ color: theme.lightPanel, toneMapped: false });
   const lightPanels = [];
   for (let zi = -3; zi <= 3; zi++) {
     for (const sx of [-1, 1]) {
@@ -532,7 +536,7 @@ export function buildArena() {
     }
   }
   // ceiling light housing frames
-  const housingMat = new THREE.MeshStandardMaterial({ color: 0x2a3142, roughness: 0.7, metalness: 0.4 });
+  const housingMat = new THREE.MeshStandardMaterial({ color: new THREE.Color(theme.ceil).lerp(new THREE.Color(0xffffff), 0.12), roughness: 0.7, metalness: 0.4 });
   for (let zi = -3; zi <= 3; zi++) {
     for (const sx of [-1, 1]) {
       const frame = new THREE.Mesh(new THREE.BoxGeometry(1020, 40, 290), housingMat);
@@ -541,7 +545,7 @@ export function buildArena() {
     }
   }
   // outer stadium trusses (visible through the glass)
-  const trussMat = new THREE.MeshStandardMaterial({ color: 0x3a4152, roughness: 0.8, metalness: 0.4 });
+  const trussMat = new THREE.MeshStandardMaterial({ color: theme.truss, roughness: 0.8, metalness: 0.4 });
   for (let zi = -4; zi <= 4; zi++) {
     const t = new THREE.Mesh(new THREE.BoxGeometry(A.HALF_WIDTH * 2 + 2400, 90, 90), trussMat);
     t.position.set(0, H + 200, zi * 1300);
@@ -600,7 +604,7 @@ export function buildArena() {
     pads.push({ group: padGroup, orb, ring, big: p.big, mat: orbMat, ringMat, beam });
   }
 
-  return { group, pads, lightPanels, animated };
+  return { group, pads, lightPanels, animated, theme };
 }
 
 function buildGoal(color, animated) {

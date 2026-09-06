@@ -3,6 +3,10 @@ import { SKILLS } from '../bot/bot.js';
 import { DRILLS, loadProgress } from '../training.js';
 import { PRESETS, BIND_LABELS, prettyCode } from '../input.js';
 import { CAMERA_PRESETS } from '../render/renderer.js';
+import { CARS, HITBOXES, PAINT_COLORS, FINISHES, WHEELS, BOOST_TRAILS, GOAL_EXPLOSIONS, RARITY_COLORS, carById, resolveSpec } from '../cars.js';
+import { MUTATOR_GROUPS, MUTATOR_PRESETS, describe as describeMutators, defaultMutators } from '../mutators.js';
+import { ARENA_LIST } from '../arenas.js';
+import { loadProfile, rankOf, levelOf, xpIntoLevel, XP_PER_LEVEL } from '../progress.js';
 
 // ---------------------------------------------------------------------------
 function Seg({ label, options, value, onChange }) {
@@ -40,12 +44,34 @@ function Toggle({ value, onChange, save }) {
 }
 
 // ---------------------------------------------------------------------------
+function ProfileBar() {
+  const p = loadProfile();
+  const rank = rankOf(p.xp);
+  return (
+    <div className="row between section" style={{ fontSize: 13 }}>
+      <span>
+        <b className="rank" style={{ color: rank.color }}>
+          {rank.label}
+        </b>{' '}
+        · Level {p.level} · {p.xp} XP
+        <span className="xp-bar" style={{ display: 'block', width: 180 }}>
+          <i style={{ width: `${Math.round((xpIntoLevel(p.xp) / XP_PER_LEVEL) * 100)}%` }} />
+        </span>
+      </span>
+      <span>
+        {p.matches} matches · {p.wins}W {p.draws}D {p.losses}L · {p.goals} goals · {p.saves} saves · {rank.toNext} XP to {rank.nextLabel}
+      </span>
+    </div>
+  );
+}
+
 function MainScreen({ nav, engine }) {
   const cards = [
     { icon: '🏟️', title: 'Play match', desc: 'Full match vs bots. 1v1, 2v2 or 3v3, four difficulty tiers, boost pads, overtime, demos, the works.', fn: () => nav({ type: 'matchSetup' }) },
+    { icon: '🔧', title: 'Garage', desc: 'Twelve cars across six hitbox classes, paints, finishes, wheels, boost trails and goal explosions.', fn: () => nav({ type: 'garage' }) },
     { icon: '🎓', title: 'Training', desc: 'Seven drills with levels that adapt to you: shooting, saves, aerials, dribbling, kickoffs, wall play, recovery.', fn: () => nav({ type: 'training' }) },
     { icon: '🕹️', title: 'Free play', desc: 'Just you and the ball. Press T to reset. Great for warm-ups and mechanics.', fn: () => engine.startGame({ mode: 'freeplay' }) },
-    { icon: '📈', title: 'Progress', desc: 'Your training history, accuracy per drill and match results.', fn: () => nav({ type: 'progress' }) },
+    { icon: '📈', title: 'Progress', desc: 'Your rank, XP, training history, accuracy per drill and match results.', fn: () => nav({ type: 'progress' }) },
     { icon: '⚙️', title: 'Settings', desc: 'Controls, camera, audio, coach.', fn: () => nav({ type: 'settings' }) },
     { icon: '📖', title: 'How to play', desc: 'Controls, mechanics and the basics of good car soccer.', fn: () => nav({ type: 'howto' }) },
   ];
@@ -72,9 +98,10 @@ function MainScreen({ nav, engine }) {
             </div>
           ))}
         </div>
+        <ProfileBar />
         <div className="row between section muted" style={{ fontSize: 13 }}>
           <span>
-            Keyboard: <b>WASD</b> drive · <b>Space</b> jump · <b>Shift</b> boost · <b>Ctrl</b> powerslide/air roll · <b>Q/E</b> air roll · <b>C</b> ball cam
+            Keyboard: <b>WASD</b> drive · <b>Space</b> jump · <b>Shift</b> boost · <b>Ctrl</b> powerslide/air roll · <b>Q/E</b> air roll · <b>X</b> item · <b>C</b> ball cam
           </span>
           <span>Gamepad supported</span>
         </div>
@@ -84,8 +111,68 @@ function MainScreen({ nav, engine }) {
 }
 
 // ---------------------------------------------------------------------------
+function ArenaPicker({ value, onChange }) {
+  return (
+    <div className="field">
+      <label>Arena</label>
+      <div className="seg">
+        {ARENA_LIST.map((a) => (
+          <button key={a.id} className={a.id === value ? 'on' : ''} title={a.desc} onClick={() => onChange(a.id)}>
+            {a.name}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function MutatorPanel({ value, onChange }) {
+  const [open, setOpen] = useState(false);
+  const mods = describeMutators(value);
+  return (
+    <div className="section">
+      <div className="row between">
+        <h3 style={{ margin: 0 }}>Mutators</h3>
+        <div className="row">
+          {Object.entries(MUTATOR_PRESETS).map(([k, p]) => (
+            <button key={k} className="small" title={p.desc} onClick={() => onChange({ ...defaultMutators(), ...p.values })}>
+              {p.label}
+            </button>
+          ))}
+          <button className="small" onClick={() => onChange(defaultMutators())}>
+            Reset
+          </button>
+          <button className={`small${open ? ' primary' : ''}`} onClick={() => setOpen(!open)}>
+            {open ? 'Hide' : 'Advanced rules'}
+          </button>
+        </div>
+      </div>
+      <p className="muted" style={{ fontSize: 12 }}>
+        {mods.length ? mods.join(' · ') : 'Standard rules'}
+      </p>
+      {open && (
+        <div className="mut-grid section">
+          {MUTATOR_GROUPS.map((g) => (
+            <div className="field" key={g.id}>
+              <label>{g.label}</label>
+              <div className="seg">
+                {g.options.map((o) => (
+                  <button key={String(o.v)} className={o.v === value[g.id] ? 'on' : ''} onClick={() => onChange({ ...value, [g.id]: o.v })}>
+                    {o.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function MatchSetupScreen({ nav, engine, force }) {
   const s = engine.settings;
+  if (!s.mutators) s.mutators = defaultMutators();
   const descs = {
     rookie: 'Slow reactions, no aerials, wasteful. Learn the controls.',
     pro: 'Solid positioning, shadows you, jump shots. Fair fight for most players.',
@@ -94,7 +181,17 @@ function MatchSetupScreen({ nav, engine, force }) {
   };
   const start = () => {
     engine.applySettings(s);
-    engine.startGame({ mode: 'match', teamSize: s.teamSize, difficulty: s.difficulty, duration: s.duration, humanTeam: s.humanTeam, mutators: { boost: s.boostMutator }, replays: s.replays !== false });
+    engine.startGame({
+      mode: 'match',
+      teamSize: s.teamSize,
+      difficulty: s.difficulty,
+      duration: s.mutators.length,
+      humanTeam: s.humanTeam,
+      mutators: s.mutators,
+      arena: s.arena,
+      loadout: s.loadout,
+      replays: s.replays !== false,
+    });
   };
   return (
     <div className="screen">
@@ -102,10 +199,24 @@ function MatchSetupScreen({ nav, engine, force }) {
         <h2>Match setup</h2>
         <div className="row section">
           <Seg label="Team size" options={[1, 2, 3].map((n) => ({ v: n, label: `${n}v${n}` }))} value={s.teamSize} onChange={(v) => { s.teamSize = v; force(); }} />
-          <Seg label="Match length" options={[{ v: 120, label: '2 min' }, { v: 300, label: '5 min' }, { v: 600, label: '10 min' }]} value={s.duration} onChange={(v) => { s.duration = v; force(); }} />
           <Seg label="Your team" options={[{ v: 0, label: 'Blue' }, { v: 1, label: 'Orange' }]} value={s.humanTeam} onChange={(v) => { s.humanTeam = v; force(); }} />
-          <Seg label="Boost" options={[{ v: 'normal', label: 'Normal' }, { v: 'unlimited', label: 'Unlimited' }]} value={s.boostMutator} onChange={(v) => { s.boostMutator = v; force(); }} />
+          <ArenaPicker
+            value={s.arena}
+            onChange={(v) => {
+              s.arena = v;
+              engine.applySettings(s);
+              force();
+            }}
+          />
         </div>
+        <MutatorPanel
+          value={s.mutators}
+          onChange={(v) => {
+            s.mutators = v;
+            engine.applySettings(s);
+            force();
+          }}
+        />
         <h3 className="section">Bot difficulty</h3>
         <div className="menu-grid">
           {Object.keys(SKILLS).map((key) => (
@@ -126,6 +237,120 @@ function MatchSetupScreen({ nav, engine, force }) {
         <div className="row between section">
           <button className="ghost" onClick={() => nav({ type: 'menu' })}>Back</button>
           <button className="primary" onClick={start}>Start match</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+function Swatches({ colors, value, onChange }) {
+  return (
+    <div className="swatches">
+      {colors.map((c) => (
+        <button
+          key={c.id}
+          title={c.name}
+          className={c.hex === value ? 'on' : ''}
+          style={{ background: '#' + c.hex.toString(16).padStart(6, '0') }}
+          onClick={() => onChange(c.hex)}
+        />
+      ))}
+    </div>
+  );
+}
+
+function GarageScreen({ nav, engine, force }) {
+  const s = engine.settings;
+  if (!s.loadout) s.loadout = { car: 'octane', primary: 0x1b3f9e, secondary: 0x0e1220, finish: 'glossy', wheels: 'spoke', trail: 'default', explosion: 'default' };
+  const L = s.loadout;
+  const set = (patch) => {
+    s.loadout = { ...L, ...patch };
+    engine.applySettings(s);
+    force();
+  };
+  const car = carById(L.car);
+  const hb = HITBOXES[car.hitbox];
+  const spec = resolveSpec(L);
+
+  // put the selected car on the turntable behind the menu
+  useEffect(() => {
+    engine.setGaragePreview(L);
+    return () => engine.clearGaragePreview();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [L.car, L.primary, L.secondary, L.finish, L.wheels, L.trail]);
+
+  return (
+    <div className="screen">
+      <div className="panel" style={{ maxWidth: 1080 }}>
+        <h2>Garage</h2>
+        <p className="muted">
+          Every car uses the same engine, boost and jump — only the <b>hitbox</b> changes, exactly like Rocket League. Pick the shape that suits your
+          game, then paint it.
+        </p>
+        <div className="garage section">
+          <div>
+            <h3 className="section" style={{ marginTop: 0 }}>
+              Cars
+            </h3>
+            <div className="car-grid">
+              {CARS.map((c) => (
+                <div
+                  key={c.id}
+                  className={`car${c.id === L.car ? ' selected' : ''}`}
+                  onClick={() => {
+                    engine.audio.ui();
+                    set({ car: c.id });
+                  }}
+                >
+                  <b>{c.name}</b>
+                  <small>{HITBOXES[c.hitbox].name} hitbox</small>
+                  <span className="rarity" style={{ color: RARITY_COLORS[c.rarity] }}>
+                    {c.rarity}
+                  </span>
+                </div>
+              ))}
+            </div>
+            <div className="tip section">💡 {car.desc}</div>
+          </div>
+          <div>
+            <h3 className="section" style={{ marginTop: 0 }}>
+              {hb.name} hitbox
+            </h3>
+            <div className="kv">
+              <span>Length</span>
+              <span className="hitbox">{hb.length.toFixed(1)} uu</span>
+              <span>Width</span>
+              <span className="hitbox">{hb.width.toFixed(1)} uu</span>
+              <span>Height</span>
+              <span className="hitbox">{hb.height.toFixed(1)} uu</span>
+              <span>Front offset</span>
+              <span className="hitbox">{hb.offsetZ.toFixed(1)} uu</span>
+            </div>
+            <p className="muted" style={{ fontSize: 12 }}>{hb.blurb}</p>
+
+            <h3 className="section">Paint</h3>
+            <div className="row between">
+              <div>
+                <small className="muted">Primary</small>
+                <Swatches colors={PAINT_COLORS} value={L.primary} onChange={(v) => set({ primary: v })} />
+              </div>
+              <div>
+                <small className="muted">Accent</small>
+                <Swatches colors={PAINT_COLORS} value={L.secondary} onChange={(v) => set({ secondary: v })} />
+              </div>
+            </div>
+
+            <Seg label="Finish" options={FINISHES.map((f) => ({ v: f.id, label: f.name }))} value={L.finish} onChange={(v) => set({ finish: v })} />
+            <Seg label="Wheels" options={WHEELS.map((w) => ({ v: w.id, label: w.name }))} value={L.wheels} onChange={(v) => set({ wheels: v })} />
+            <Seg label="Boost trail" options={BOOST_TRAILS.map((t) => ({ v: t.id, label: t.name }))} value={L.trail} onChange={(v) => set({ trail: v })} />
+            <Seg label="Goal explosion" options={GOAL_EXPLOSIONS.map((g) => ({ v: g.id, label: g.name }))} value={L.explosion} onChange={(v) => set({ explosion: v })} />
+            <p className="muted" style={{ fontSize: 12 }}>{spec.explosion.blurb}</p>
+          </div>
+        </div>
+        <div className="row between section">
+          <button className="ghost" onClick={() => nav({ type: 'menu' })}>Back</button>
+          <span className="muted">Driving <b>{car.name}</b> · {spec.finish.name} · {spec.wheels.name} wheels · {spec.trail.name} trail</span>
         </div>
       </div>
     </div>
@@ -188,6 +413,34 @@ function TrainingScreen({ nav, engine, force }) {
 }
 
 // ---------------------------------------------------------------------------
+function SeasonPanel() {
+  const p = loadProfile();
+  const rank = rankOf(p.xp);
+  const acc = p.shotsTaken ? Math.round((p.shotsOnGoal / p.shotsTaken) * 100) : 0;
+  return (
+    <div className="section">
+      <div className="row between">
+        <div>
+          <div className="rank" style={{ color: rank.color, fontSize: 24 }}>
+            {rank.label}
+          </div>
+          <div className="muted" style={{ fontSize: 13 }}>
+            Level {p.level} · {p.xp} XP · {rank.toNext} XP to {rank.nextLabel}
+          </div>
+        </div>
+        <div className="muted" style={{ fontSize: 13, textAlign: 'right' }}>
+          {p.matches} matches · {p.wins}W {p.draws}D {p.losses}L
+          <br />
+          {p.goals} goals · {p.saves} saves · {p.demos} demos · {acc}% shot accuracy
+        </div>
+      </div>
+      <div className="xp-bar">
+        <i style={{ width: `${Math.round(rank.pct * 100)}%` }} />
+      </div>
+    </div>
+  );
+}
+
 function ProgressScreen({ nav, force }) {
   const prog = loadProgress();
   const matches = JSON.parse(localStorage.getItem('rocketgoal.matches') || '[]');
@@ -202,6 +455,7 @@ function ProgressScreen({ nav, force }) {
     <div className="screen">
       <div className="panel">
         <h2>Progress</h2>
+        <SeasonPanel />
         <h3 className="section">Drills</h3>
         <div className="progress-grid">
           {DRILLS.map((d) => {
@@ -502,6 +756,9 @@ function HowToScreen({ nav, engine }) {
           <p><b>Air roll:</b> Q/E (or hold powerslide + steer) rotate the car around its long axis. Land on your wheels to keep momentum.</p>
           <p><b>Speed flip:</b> diagonal flip, then cancel by pulling back — the fastest way to get to a ball. Practice on kickoffs.</p>
           <p><b>Wavedash:</b> flip just as your wheels touch the ground after a small hop to get a burst of speed for free.</p>
+          <p><b>Rumble:</b> turn on the Rumble mutator and every car carries a power-up (Boost, Grapple, Boot, Spike, Tornado, Haymaker, Power Shot,
+          Swapper). Boost is unlimited; press <b>X</b> (or D-pad up) to fire your item, then wait for it to recharge.</p>
+          <p><b>Hitboxes:</b> cars only differ by hitbox — a Batmobile is 18 uu tall, a Merc is 47. Tall boxes win 50/50s, flat boxes dribble and pinch.</p>
         </div>
         <h3 className="section">Getting better (what the bots punish)</h3>
         <div className="muted">
@@ -587,7 +844,43 @@ function PauseScreen({ nav, engine, force }) {
 }
 
 // ---------------------------------------------------------------------------
-function ResultsScreen({ nav, engine, stats, report, config }) {
+function XpPanel({ xp }) {
+  if (!xp) return null;
+  const { before, after, breakdown, leveledUp, rankUp } = xp;
+  return (
+    <div className="section">
+      <h3>
+        XP <span className="muted">+{xp.total}</span>
+      </h3>
+      <div className="xp-list">
+        {breakdown.map((b, i) => (
+          <div key={i}>
+            <span>{b.label}</span>
+            <b>+{b.value}</b>
+          </div>
+        ))}
+      </div>
+      <div className="row between section" style={{ fontSize: 13 }}>
+        <span>
+          Level {before.level} → <b>{after.level}</b>
+          {leveledUp ? ' 🎉' : ''}
+        </span>
+        <span className="rank" style={{ color: after.rank.color }}>
+          {before.rank.label} → {after.rank.label}
+          {rankUp ? ' ⬆ RANK UP' : ''}
+        </span>
+      </div>
+      <div className="xp-bar">
+        <i style={{ width: `${Math.round(after.rank.pct * 100)}%` }} />
+      </div>
+      <small className="muted">
+        {after.rank.toNext} XP to {after.rank.nextLabel}
+      </small>
+    </div>
+  );
+}
+
+function ResultsScreen({ nav, engine, stats, report, config, xp }) {
   const h = stats.cars.find((c) => c.isHuman);
   const won = h && stats.score[h.team] > stats.score[1 - h.team];
   const draw = stats.score[0] === stats.score[1];
@@ -624,6 +917,7 @@ function ResultsScreen({ nav, engine, stats, report, config }) {
               <tr key={i} className={`${c.team === 0 ? 'blue' : 'orange'}${c.isHuman ? ' me' : ''}`}>
                 <td>
                   {c.name}
+                  {c.model ? <small className="muted"> · {c.model}</small> : null}
                   {c.isBot ? '' : ' (you)'}
                   {c === mvp ? <span className="mvp">MVP</span> : null}
                 </td>
@@ -640,6 +934,8 @@ function ResultsScreen({ nav, engine, stats, report, config }) {
             ))}
           </tbody>
         </table>
+        {stats.mutators && stats.mutators.length ? <p className="muted" style={{ fontSize: 12 }}>Mutators: {stats.mutators.join(' · ')}</p> : null}
+        <XpPanel xp={xp} />
         <h3 className="section">Coach report</h3>
         <div className="report">
           {report.map((r, i) => (
@@ -711,6 +1007,8 @@ export function Menus({ engine, overlay, nav }) {
       return <MatchSetupScreen nav={nav} engine={engine} force={force} />;
     case 'training':
       return <TrainingScreen nav={nav} engine={engine} force={force} />;
+    case 'garage':
+      return <GarageScreen nav={nav} engine={engine} force={force} />;
     case 'progress':
       return <ProgressScreen nav={nav} force={force} />;
     case 'settings':
@@ -720,7 +1018,7 @@ export function Menus({ engine, overlay, nav }) {
     case 'pause':
       return <PauseScreen nav={nav} engine={engine} force={force} />;
     case 'results':
-      return <ResultsScreen nav={nav} engine={engine} stats={overlay.stats} report={overlay.report} config={overlay.config} />;
+      return <ResultsScreen nav={nav} engine={engine} stats={overlay.stats} report={overlay.report} config={overlay.config} xp={overlay.xp} />;
     case 'drillSummary':
       return <DrillSummaryScreen nav={nav} engine={engine} drill={overlay.drill} config={overlay.config} />;
     default:

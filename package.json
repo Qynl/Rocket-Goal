@@ -6,7 +6,10 @@
   "scripts": {
     "dev": "vite --host 0.0.0.0",
     "build": "vite build",
-    "preview": "vite preview --host 0.0.0.0"
+    "preview": "vite preview --host 0.0.0.0",
+    "test": "node scripts/uitest.mjs && node scripts/cartest.mjs && node scripts/mutatortest.mjs && node scripts/rumbletest.mjs && node scripts/rendertest.mjs && node scripts/replaytest.mjs",
+    "test:drills": "node scripts/drills.mjs",
+    "sim": "node scripts/sim.mjs"
   },
   "dependencies": {
     "react": "^18.3.1",

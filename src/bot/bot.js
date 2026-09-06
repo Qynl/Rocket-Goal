@@ -153,6 +153,10 @@ export class Bot {
   get attackSign() {
     return this.car.team === TEAM.BLUE ? 1 : -1;
   }
+  /** Ball radius follows the ball-size mutator. */
+  get ballRadius() {
+    return this.game.ball.radius;
+  }
   get enemyGoal() {
     return _v3.set(0, 0, this.attackSign * ARENA.HALF_LENGTH);
   }
@@ -221,6 +225,9 @@ export class Bot {
       this.lastTouchTime = lt.time;
       if (lt.car !== car) this.lockUntil = game.time + this.skill.reaction * rand(0.7, 1.3);
     }
+
+    // Rumble: fire the power-up when it is worth using
+    if (game.rumble && car.item && game.rumble.botWants(car, this.role)) game.rumble.use(car);
 
     // active maneuver overrides everything
     if (this.maneuver) {
@@ -293,7 +300,7 @@ export class Bot {
     let threat = null;
     for (const p of pred) {
       if (p.t > 4.5) break;
-      if (p.pos.z * -atk > ARENA.HALF_LENGTH - BALL.RADIUS && Math.abs(p.pos.x) < ARENA.GOAL_HALF_WIDTH + 100 && p.pos.y < ARENA.GOAL_HEIGHT + 100) {
+      if (p.pos.z * -atk > ARENA.HALF_LENGTH - this.ballRadius && Math.abs(p.pos.x) < ARENA.GOAL_HALF_WIDTH + 100 && p.pos.y < ARENA.GOAL_HEIGHT + 100) {
         threat = p;
         break;
       }
@@ -455,7 +462,7 @@ export class Bot {
       }
       if (h < 160) {
         // ground hit: approach from behind the ball along the shot line
-        approach.copy(bp).addScaledVector(dir, -(BALL.RADIUS + 40));
+        approach.copy(bp).addScaledVector(dir, -(this.ballRadius + 40));
         approach.y = 0;
         // extra time to line up: how far is our approach direction from the shot line?
         const toApproach = _v.copy(approach).sub(car.pos).setY(0);
@@ -474,7 +481,7 @@ export class Bot {
         // otherwise a later (lower) sample will be picked, which is what a good player does.
         const rt = riseTime(h - 115);
         if (!rt) continue;
-        approach.copy(bp).addScaledVector(dir, -(BALL.RADIUS + 20));
+        approach.copy(bp).addScaledVector(dir, -(this.ballRadius + 20));
         approach.y = 0;
         const tNeed = timeToPoint(car, approach, sk.useBoost) / sk.speedFactor;
         const wait = p.t - tNeed;
@@ -483,7 +490,7 @@ export class Bot {
         }
       } else if (canAerial && h <= sk.maxAerialHeight && p.t > 0.6 && p.t < 4) {
         // aerial feasibility: required acceleration after a jump
-        const contact = approach.copy(bp).addScaledVector(dir, -(BALL.RADIUS + 30));
+        const contact = approach.copy(bp).addScaledVector(dir, -(this.ballRadius + 30));
         const req = aerialRequirement(car, contact, p.t - 0.25, _acc);
         // after jumping we get ~ 292 + 200 vertical velocity; approximate by reducing vertical requirement
         req.y -= (500 / (p.t - 0.25)) * 2;
@@ -679,7 +686,7 @@ export class Bot {
         return;
       }
       ic.pos.copy(p.pos);
-      ic.point.copy(p.pos).addScaledVector(ic.dir, -(BALL.RADIUS + 40));
+      ic.point.copy(p.pos).addScaledVector(ic.dir, -(this.ballRadius + 40));
       if (ic.mode !== 'aerial') ic.point.y = 0;
     }
 
@@ -953,7 +960,7 @@ export class Bot {
     }
     // dodge into the ball: jump early enough that the flip lands on the ball (contact ~0.1-0.2 s after the jump)
     const closing = Math.max(300, car.vel.dot(toBall));
-    const tContact = (dist - BALL.RADIUS - 60) / closing;
+    const tContact = (dist - this.ballRadius - 60) / closing;
     if (tContact < 0.22 + plan.dodgeLead && car.onGround) {
       this._kickoffFlipped = false;
       this._kickoffFlipped2 = false;
@@ -1199,7 +1206,7 @@ export class Bot {
       // ball got hit elsewhere, bail out
       return this.aerialAbort(m);
     }
-    const contact = _v.copy(ic.pos).addScaledVector(ic.dir, -(BALL.RADIUS + 25));
+    const contact = _v.copy(ic.pos).addScaledVector(ic.dir, -(this.ballRadius + 25));
 
     // phase 0: jump & hold; phase 1: flight
     if (m.phase === 0) {
