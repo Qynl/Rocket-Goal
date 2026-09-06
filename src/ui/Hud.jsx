@@ -98,7 +98,27 @@ export function Hud({ store }) {
         </div>
       </div>
 
+      {snap.mutators && snap.mutators.length ? <div className="mutators">{snap.mutators.join(' · ')}</div> : null}
+
       <div className="status" dangerouslySetInnerHTML={{ __html: snap.pills.join(' ') }} />
+
+      {snap.item && (
+        <div className={`item${snap.item.ready ? ' ready' : ''}${snap.item.active ? ' active' : ''}`}>
+          <div className="ring" style={{ '--p': `${Math.round(snap.item.frac * 100)}%` }} />
+          <div className="icon">{snap.item.icon}</div>
+          <div className="label">
+            <b>{snap.item.ready ? snap.item.name : 'Recharging'}</b>
+            <small>{snap.item.ready ? 'X / D-pad up' : `${Math.ceil((1 - snap.item.frac) * 10)}s`}</small>
+          </div>
+        </div>
+      )}
+
+      {snap.respawn !== null && snap.respawn !== undefined && (
+        <div className="respawn">
+          <b>DEMOLISHED</b>
+          <small>Respawning in {snap.respawn.toFixed(1)}s</small>
+        </div>
+      )}
 
       {snap.message && <div key={snap.message.html + snap.message.cls} className={`center-msg ${snap.message.cls || ''}`} dangerouslySetInnerHTML={{ __html: snap.message.html }} />}
       {snap.coach && <div className="coach" dangerouslySetInnerHTML={{ __html: snap.coach }} />}

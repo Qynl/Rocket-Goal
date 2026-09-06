@@ -31,11 +31,11 @@ export function driveTo(bot, target, opts = {}) {
   const angle = Math.atan2(local.x, local.z); // + = right
   const speed = car.forwardSpeed;
   const absSpeed = Math.abs(speed);
-  let desired = opts.speed ?? CAR.MAX_SPEED;
+  let desired = opts.speed ?? car.maxSpeed;
   if (opts.arriveIn !== undefined && opts.arriveIn > 0) {
     desired = Math.min(desired, dist / opts.arriveIn);
   }
-  desired = clamp(desired, 0, CAR.MAX_SPEED);
+  desired = clamp(desired, 0, car.maxSpeed);
 
   // Steering
   let steer = clamp(angle * 3.2, -1, 1);
@@ -59,7 +59,7 @@ export function driveTo(bot, target, opts = {}) {
   // boost
   let boost = false;
   const boostAllowed = (opts.allowBoost ?? true) && bot.skill.useBoost;
-  if (boostAllowed && throttle > 0 && Math.abs(angle) < 0.35 && speed < desired - 120 && speed < CAR.MAX_SPEED - 20 && car.boost > 0) {
+  if (boostAllowed && throttle > 0 && Math.abs(angle) < 0.35 && speed < desired - 120 && speed < car.maxSpeed - 20 && car.boost > 0) {
     // do not waste boost when a flip would do or when target speed is reachable by throttle
     if (desired > 1300 || dist > 1500) boost = true;
     if (speed >= 1410 - 20 && desired <= 1410) boost = false;

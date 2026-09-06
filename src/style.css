@@ -981,3 +981,222 @@ table.stats tr.me td {
     opacity: 1;
   }
 }
+
+/* ---------- Rumble power-up + respawn ---------- */
+#hud .item {
+  position: absolute;
+  right: 250px;
+  bottom: 52px;
+  width: 150px;
+  height: 150px;
+  display: grid;
+  place-items: center;
+  font-family: var(--font-display);
+}
+#hud .item .ring {
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  background: conic-gradient(from -90deg, rgba(255, 255, 255, 0.9) var(--p), rgba(255, 255, 255, 0.12) 0);
+  -webkit-mask: radial-gradient(circle, transparent 62%, #000 63%);
+  mask: radial-gradient(circle, transparent 62%, #000 63%);
+  opacity: 0.55;
+}
+#hud .item.ready .ring {
+  background: conic-gradient(from -90deg, var(--accent) 100%, transparent 0);
+  opacity: 0.95;
+}
+#hud .item .icon {
+  font-size: 46px;
+  filter: grayscale(0.8) brightness(0.7);
+}
+#hud .item.ready .icon {
+  filter: none;
+  animation: itemPulse 1.6s ease-in-out infinite;
+}
+#hud .item .label {
+  position: absolute;
+  bottom: -30px;
+  width: 170px;
+  text-align: center;
+  line-height: 1.1;
+}
+#hud .item .label b {
+  display: block;
+  font-size: 17px;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+#hud .item.ready .label b {
+  color: var(--accent);
+}
+#hud .item .label small {
+  font-size: 11px;
+  color: var(--muted);
+  letter-spacing: 0.6px;
+}
+@keyframes itemPulse {
+  0%,
+  100% {
+    transform: scale(1);
+  }
+  50% {
+    transform: scale(1.12);
+  }
+}
+#hud .respawn {
+  position: absolute;
+  left: 50%;
+  top: 34%;
+  transform: translateX(-50%);
+  text-align: center;
+  font-family: var(--font-display);
+  background: rgba(6, 10, 20, 0.6);
+  border: 1px solid rgba(255, 77, 109, 0.5);
+  border-radius: 14px;
+  padding: 12px 26px;
+}
+#hud .respawn b {
+  display: block;
+  font-size: 26px;
+  letter-spacing: 3px;
+  color: var(--danger);
+}
+#hud .respawn small {
+  color: var(--muted);
+}
+
+/* ---------- garage ---------- */
+.garage {
+  display: grid;
+  grid-template-columns: 1.15fr 0.85fr;
+  gap: 18px;
+  align-items: start;
+}
+.car-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(148px, 1fr));
+  gap: 10px;
+  max-height: 340px;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+.car-grid .car {
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 12px;
+  padding: 10px;
+  cursor: pointer;
+  background: rgba(10, 16, 30, 0.6);
+  transition: 0.15s;
+}
+.car-grid .car:hover {
+  transform: translateY(-2px);
+  border-color: rgba(68, 255, 204, 0.5);
+}
+.car-grid .car.selected {
+  border-color: var(--accent);
+  background: rgba(30, 70, 90, 0.45);
+}
+.car-grid .car b {
+  display: block;
+  font-family: var(--font-display);
+  font-size: 16px;
+  letter-spacing: 0.5px;
+}
+.car-grid .car small {
+  color: var(--muted);
+  font-size: 11px;
+}
+.car-grid .car .rarity {
+  display: inline-block;
+  margin-top: 6px;
+  font-size: 10px;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  padding: 2px 6px;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.08);
+}
+.swatches {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.swatches button {
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border-radius: 7px;
+  border: 2px solid rgba(255, 255, 255, 0.16);
+}
+.swatches button.on {
+  border-color: var(--accent);
+  transform: scale(1.12);
+}
+.kv .hitbox {
+  color: var(--accent);
+}
+.mut-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
+  gap: 12px;
+}
+.mut-grid .field label {
+  display: block;
+  font-size: 12px;
+  color: var(--muted);
+  letter-spacing: 0.6px;
+  text-transform: uppercase;
+  margin-bottom: 6px;
+}
+.mut-grid .seg {
+  flex-wrap: wrap;
+}
+.xp-bar {
+  height: 12px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.1);
+  overflow: hidden;
+  margin-top: 6px;
+}
+.xp-bar i {
+  display: block;
+  height: 100%;
+  background: linear-gradient(90deg, var(--accent), #7fd6ff);
+}
+.rank {
+  font-family: var(--font-display);
+  letter-spacing: 1px;
+}
+.xp-list {
+  font-size: 13px;
+  color: var(--muted);
+}
+.xp-list div {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+}
+.xp-list div b {
+  color: var(--accent);
+}
+
+#hud .mutators {
+  position: absolute;
+  left: 50%;
+  top: 86px;
+  transform: translateX(-50%);
+  font-size: 12px;
+  letter-spacing: 0.8px;
+  text-transform: uppercase;
+  color: var(--muted);
+  background: rgba(8, 12, 24, 0.55);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  padding: 3px 12px;
+  border-radius: 20px;
+  white-space: nowrap;
+  max-width: 80vw;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}

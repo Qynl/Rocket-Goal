@@ -6,9 +6,14 @@ import { ARENA, BALL, BOOST_PADS, BOOST_PAD, KICKOFF_SPAWNS, PHYSICS_DT, TEAM, C
 import { Bot, SKILLS } from './bot/bot.js';
 import { clamp, rand } from './math.js';
 import { createDrill } from './training.js';
+import { resolve as resolveMutators, describe as describeMutators } from './mutators.js';
+import { Rumble } from './rumble.js';
+import { botSpec } from './cars.js';
 
 const KICKOFF_COUNTDOWN = 3;
 const GOAL_PAUSE = 3.5;
+const _ca = new THREE.Vector3();
+const _cb = new THREE.Vector3();
 
 /**
  * Game / match state. Purely simulation — no rendering. The renderer reads
@@ -49,14 +54,18 @@ export const STAT_LABELS = {
 export class Game {
   constructor(config) {
     this.config = config;
-    this.ball = new Ball();
+    // Mutators (RL-style rule modifiers) drive the ball, boost, respawn and demo rules.
+    this.mutators = resolveMutators(config.mutators || {});
+    this.mutatorSummary = describeMutators(config.mutators || {});
+    this.ball = new Ball(this.mutators.ball);
     this.cars = [];
     this.bots = [];
     this.human = null;
     this.pads = BOOST_PADS.map((p) => ({ ...p, timer: 0, active: true }));
     this.score = [0, 0];
     this.time = 0; // total simulated seconds
-    this.clock = config.duration ?? 300; // match seconds remaining
+    const dur = config.duration ?? this.mutators.duration ?? 300;
+    this.clock = dur > 0 ? dur : Infinity; // match seconds remaining (0 => unlimited)
     this.overtime = false;
     this.state = 'countdown';
     this.stateTimer = KICKOFF_COUNTDOWN;
@@ -68,7 +77,14 @@ export class Game {
     this.lastGoal = null;
     this.timeScale = 1;
     this.frame = 0;
-    this.unlimitedBoost = config.mutators?.boost === 'unlimited';
+    this.unlimitedBoost = !!this.mutators.boost.unlimited;
+    this.noBoost = !!this.mutators.boost.none;
+    this.maxScore = this.mutators.maxScore;
+    this.demoMode = this.mutators.demoMode;
+    this.respawnTime = this.mutators.respawnTime;
+    this.overtimeLimit = this.mutators.overtime;
+    this.overtimeStart = null;
+    this.rumble = null;
     this.touchLog = [];
     this.matchStats = { possession: [0, 0], shots: [0, 0], saves: [0, 0], demos: [0, 0], humanBehindBall: 0, humanTime: 0, humanOwnHalf: 0 };
     this.drill = null;
@@ -78,6 +94,10 @@ export class Game {
     this.replayDelay = 0;
 
     this.setupTeams();
+    // Rumble: power-ups for everyone, boost is free (mutators already unlocked it)
+    if (this.mutators.rumble !== 'none' && config.mode !== 'drill') {
+      this.rumble = new Rumble(this, this.mutators.rumbleCooldown);
+    }
     if (config.mode === 'drill') {
       this.drill = createDrill(config.drill, this);
       this.state = 'play';
@@ -92,6 +112,23 @@ export class Game {
     } else {
       this.setupKickoff();
     }
+  }
+
+  /** Push the resolved mutator numbers onto every car. */
+  applyCarTuning() {
+    for (const c of this.cars) {
+      c.boostAccel = this.mutators.boost.accel;
+      c.maxSpeed = this.mutators.boost.maxSpeed;
+      c.boostRecharge = this.mutators.boost.recharge;
+      if (this.unlimitedBoost) c.boost = 100;
+      if (this.noBoost) c.boost = 0;
+    }
+  }
+
+  /** Fire the Rumble power-up a car is holding (no-op when Rumble is off). */
+  useItem(car) {
+    if (!this.rumble || !car || car.demolished) return null;
+    return this.rumble.use(car);
   }
 
   on(evt, fn) {
@@ -116,17 +153,18 @@ export class Game {
       const count = cfg.mode === 'freeplay' && team !== humanTeam ? 0 : size;
       for (let i = 0; i < count; i++) {
         if (team === humanTeam && i === 0) {
-          const car = new Car(team, cfg.playerName || 'You', false);
+          const car = new Car(team, cfg.playerName || 'You', false, { primary: team === 0 ? 0x2a6cff : 0xff8a1f, ...(cfg.loadout || cfg.carSpec || {}) });
           this.human = car;
           this.cars.push(car);
         } else {
-          const car = new Car(team, names[team][i % 5], true);
+          const car = new Car(team, names[team][i % 5], true, botSpec(team, i));
           this.cars.push(car);
           const bot = new Bot(car, this, skill, team === humanTeam ? cfg.teammateSkill || skill : skill);
           this.bots.push(bot);
         }
       }
     }
+    this.applyCarTuning();
     if (cfg.mode === 'drill' && cfg.drillBots === false) {
       // drills without bots
       this.bots.length = 0;
@@ -151,7 +189,7 @@ export class Game {
         const x = sgn === 1 ? s.x : -s.x;
         const z = sgn === 1 ? s.z : -s.z;
         const yaw = sgn === 1 ? s.yaw : s.yaw + Math.PI;
-        car.setPose(x, z, yaw, 33);
+        car.setPose(x, z, yaw, this.unlimitedBoost ? 100 : 33);
         spawnsUsed.push(order[i]);
       });
     }
@@ -206,7 +244,7 @@ export class Game {
         if (this.replay.t >= this.replay.duration) this.replay = null;
       }
       if (this.stateTimer <= 0 && !this.replay) {
-        if (this.overtime && this.lastGoal) {
+        if ((this.overtime && this.lastGoal) || (this.maxScore && Math.max(...this.score) >= this.maxScore)) {
           this.endMatch();
         } else if (this.clock <= 0) {
           this.endMatch();
@@ -216,8 +254,14 @@ export class Game {
       }
     } else if (this.state === 'play') {
       if (this.clock !== Infinity) {
-        if (this.overtime) this.clock += dt;
-        else this.clock = Math.max(0, this.clock - dt);
+        if (this.overtime) {
+          this.clock += dt;
+          // overtime can be capped by a mutator (5 / 10 minutes)
+          if (this.overtimeLimit !== 'unlimited' && this.overtimeLimit !== 'none') {
+            if (this.overtimeStart === null) this.overtimeStart = this.time;
+            if (this.time - this.overtimeStart > this.overtimeLimit && this.ball.onGround) this.endMatch();
+          }
+        } else this.clock = Math.max(0, this.clock - dt);
         if (this.clock <= 0 && !this.overtime && this.ball.onGround) {
           this.zeroSecondEnd();
         }
@@ -262,9 +306,15 @@ export class Game {
         if (c.respawnTimer <= 0) this.respawn(c);
         continue;
       }
-      if (this.unlimitedBoost) c.boost = 100;
+      if (this.unlimitedBoost) c.boost = CAR.MAX_BOOST;
+      else if (this.noBoost) c.boost = 0;
       c.step(dt);
+      // unlimited boost: top the tank back up after the step burned some
+      if (this.unlimitedBoost) c.boost = CAR.MAX_BOOST;
     }
+
+    // --- rumble power-ups (before collisions so their effects resolve this tick) ---
+    if (this.rumble) this.rumble.update(dt);
 
     // --- ball ---
     this.ball.step(dt);
@@ -275,12 +325,32 @@ export class Game {
       if (c.demolished) continue;
       if (collideCarBall(c, this.ball, this.time)) {
         this.onTouch(c);
+        if (this.rumble) this.rumble.onTouch(c);
       }
     }
     for (let i = 0; i < this.cars.length; i++) {
       for (let j = i + 1; j < this.cars.length; j++) {
         const res = collideCarCar(this.cars[i], this.cars[j]);
-        if (res) this.demolish(res.demolisher, res.victim);
+        let demo = res;
+        if (!demo && this.demoMode === 'always' && this.state === 'play') {
+          // "always" demolition: any *contact* between opponents takes out the slower car
+          const a = this.cars[i];
+          const b = this.cars[j];
+          if (a.team !== b.team) {
+            a.getHitboxCenter(_ca);
+            b.getHitboxCenter(_cb);
+            const rr = (Math.max(a.hitbox.half.x, a.hitbox.half.z) + Math.max(b.hitbox.half.x, b.hitbox.half.z)) * 0.53;
+            if (_ca.distanceToSquared(_cb) < rr * rr * 4) demo = a.speed >= b.speed ? { demolisher: a, victim: b } : { demolisher: b, victim: a };
+          }
+        }
+        if (!demo && this.rumble) {
+          // a live Haymaker demolishes whoever it catches, no supersonic needed
+          const a = this.cars[i];
+          const b = this.cars[j];
+          if (a.speed > b.speed && this.rumble.contact(a, b)) demo = { demolisher: a, victim: b };
+          else if (b.speed > a.speed && this.rumble.contact(b, a)) demo = { demolisher: b, victim: a };
+        }
+        if (demo) this.demolish(demo.demolisher, demo.victim);
       }
     }
 
@@ -322,7 +392,7 @@ export class Game {
   }
 
   zeroSecondEnd() {
-    if (this.score[0] === this.score[1]) {
+    if (this.score[0] === this.score[1] && this.overtimeLimit !== 'none') {
       this.overtime = true;
       this.clock = 0;
       this.emit('overtime');
@@ -500,13 +570,16 @@ export class Game {
     // respawn at own side, away from the ball
     const sgn = car.team === TEAM.BLUE ? -1 : 1;
     const x = this.ball.pos.x > 0 ? -2688 : 2688;
-    car.setPose(x, sgn * 4608, car.team === TEAM.BLUE ? 0 : Math.PI, 33);
+    car.setPose(x, sgn * 4608, car.team === TEAM.BLUE ? 0 : Math.PI, this.unlimitedBoost ? 100 : 33);
     car.demolished = false;
     car.respawnTimer = 0;
+    if (this.rumble) this.rumble.give(car, this.rumble.cooldown * 0.5);
   }
 
   demolish(demolisher, victim) {
-    victim.demolish();
+    if (this.demoMode === 'disabled') return;
+    victim.demolish(this.respawnTime);
+    if (this.demoMode === 'always' && victim.respawnTimer > 0) victim.respawnTimer = this.respawnTime;
     demolisher.stats.demos++;
     victim.stats.demoed++;
     this.matchStats.demos[demolisher.team]++;
@@ -528,6 +601,7 @@ export class Game {
         const dx = c.pos.x - p.x;
         const dz = c.pos.z - p.z;
         if (dx * dx + dz * dz < r * r && c.pos.y < h) {
+          if (this.unlimitedBoost) break; // boost is free — pads stay on the floor
           if (c.boost >= CAR.MAX_BOOST && !p.big) continue; // small pads don't trigger at full boost? In RL they do. keep simple: allow
           const before = c.boost;
           c.boost = Math.min(CAR.MAX_BOOST, c.boost + (p.big ? BOOST_PAD.BIG_AMOUNT : BOOST_PAD.SMALL_AMOUNT));
@@ -560,6 +634,8 @@ export class Game {
       team: c.team,
       isBot: c.isBot,
       isHuman: c === this.human,
+      model: c.modelName,
+      car: c.spec.car,
       ...c.stats,
       avgSpeed: c.stats.speedSamples ? c.stats.speedSum / c.stats.speedSamples : 0,
       avgBoost: c.stats.speedSamples ? c.stats.boostSum / c.stats.speedSamples : 0,
@@ -579,6 +655,9 @@ export class Game {
       overtime: this.overtime,
       forfeited: !!this.forfeited,
       clock: this.clock,
+      mutators: this.mutatorSummary,
+      arena: this.config.arena,
+      rumble: this.mutators.rumble !== 'none',
     };
   }
 }

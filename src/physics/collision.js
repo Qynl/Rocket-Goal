@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { CAR, BALL } from '../constants.js';
+import { CAR } from '../constants.js';
 import { interp, clamp } from '../math.js';
 
 const _center = new THREE.Vector3();
@@ -26,7 +26,9 @@ const PSYONIX_CURVE = [
  */
 export function collideCarBall(car, ball, time) {
   if (car.demolished) return false;
-  const h = CAR.HITBOX_HALF;
+  const h = car.hitbox.half;
+  const R = ball.radius;
+  const M = ball.mass;
   car.getHitboxCenter(_center);
   _qinv.copy(car.quat).invert();
   _local.copy(ball.pos).sub(_center).applyQuaternion(_qinv);
@@ -35,7 +37,7 @@ export function collideCarBall(car, ball, time) {
   const dy = _local.y - _closest.y;
   const dz = _local.z - _closest.z;
   const d2 = dx * dx + dy * dy + dz * dz;
-  if (d2 >= BALL.RADIUS * BALL.RADIUS) return false;
+  if (d2 >= R * R) return false;
 
   let dist = Math.sqrt(d2);
   if (dist < 1e-4) {
@@ -52,28 +54,28 @@ export function collideCarBall(car, ball, time) {
   }
   // contact normal in world (points from car toward ball)
   _n.applyQuaternion(car.quat);
-  const penetration = BALL.RADIUS - dist;
+  const penetration = R - dist;
 
   // positional separation (ball mostly, car a bit)
-  const total = CAR.MASS + BALL.MASS;
+  const total = CAR.MASS + M;
   ball.pos.addScaledVector(_n, penetration * (CAR.MASS / total));
-  car.pos.addScaledVector(_n, -penetration * (BALL.MASS / total));
+  car.pos.addScaledVector(_n, -penetration * (M / total));
 
   // relative velocity along normal
   // contact point velocity of the car (include angular velocity)
-  _tmp.copy(ball.pos).addScaledVector(_n, -BALL.RADIUS).sub(car.pos);
+  _tmp.copy(ball.pos).addScaledVector(_n, -R).sub(car.pos);
   const carPointVel = _rel.crossVectors(car.angVel, _tmp).add(car.vel);
   const relVel = _tmp.copy(ball.vel).sub(carPointVel);
   const vn = relVel.dot(_n);
 
   if (vn < 0) {
     const e = Math.abs(vn) < 60 ? 0 : 0.2; // no bounce for resting contact
-    const j = (-(1 + e) * vn) / (1 / BALL.MASS + 1 / CAR.MASS);
-    ball.vel.addScaledVector(_n, j / BALL.MASS);
+    const j = (-(1 + e) * vn) / (1 / M + 1 / CAR.MASS);
+    ball.vel.addScaledVector(_n, j / M);
     car.vel.addScaledVector(_n, -j / CAR.MASS);
     // slight ball spin from tangential rub
     const vt = relVel.addScaledVector(_n, -vn);
-    ball.angVel.addScaledVector(new THREE.Vector3().crossVectors(_n, vt), -0.4 / BALL.RADIUS);
+    ball.angVel.addScaledVector(new THREE.Vector3().crossVectors(_n, vt), -0.4 / R);
     ball.angVel.multiplyScalar(0.9);
   }
 
@@ -92,7 +94,7 @@ export function collideCarBall(car, ball, time) {
     const scale = interp(PSYONIX_CURVE, relSpeed);
     ball.vel.addScaledVector(_pn, relSpeed * scale);
     const sp = ball.vel.length();
-    if (sp > BALL.MAX_SPEED) ball.vel.multiplyScalar(BALL.MAX_SPEED / sp);
+    if (sp > ball.maxSpeed) ball.vel.multiplyScalar(ball.maxSpeed / sp);
   } else if (continuous) {
     // dribble friction: the ball is carried along with the roof
     const carPointVel2 = _rel.crossVectors(car.angVel, _tmp.copy(ball.pos).sub(car.pos)).add(car.vel);
@@ -114,7 +116,8 @@ export function collideCarCar(a, b) {
   if (a.demolished || b.demolished) return null;
   a.getHitboxCenter(_ca);
   b.getHitboxCenter(_cb);
-  const r = 62;
+  // contact radius follows each car's hitbox length (Merc bumps sooner than a Batmobile)
+  const r = (Math.max(a.hitbox.half.x, a.hitbox.half.z) + Math.max(b.hitbox.half.x, b.hitbox.half.z)) * 0.53;
   _d.copy(_cb).sub(_ca);
   const dist = _d.length();
   if (dist >= r * 2 || dist < 1e-4) return null;

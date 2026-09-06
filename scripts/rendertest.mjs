@@ -54,4 +54,73 @@ console.log('frames rendered', stub.rendered, 'car meshes', r.carMeshes.size, 'p
   console.log('ballScreen ahead', a && `x=${a.x.toFixed(2)} y=${a.y.toFixed(2)} on=${a.onScreen}`, '| behind', b && `x=${b.x.toFixed(2)} y=${b.y.toFixed(2)} on=${b.onScreen} behind=${b.behind}`);
   if (!a || !a.onScreen || !b || b.onScreen || !b.behind) { console.log('BALL SCREEN CHECK FAILED'); err = err || new Error('ballScreen'); }
 }
+// ---- arena themes --------------------------------------------------------
+{
+  const { ARENA_LIST } = await import('../src/arenas.js');
+  const idle = { ball: g.ball, cars: [], pads: g.pads, prediction: [], drill: null };
+  const v = { followCar: null, mode: 'goalReplay', ballCam: true };
+  let themeErr = null;
+  for (const a of ARENA_LIST) {
+    try {
+      r.setArenaTheme(a.id);
+      for (let i = 0; i < 5; i++) r.update(idle, 1 / 60, v);
+      const skyTop = r.skyMat.uniforms.top.value.getHex();
+      const okSky = skyTop === a.sky.top;
+      const okSun = r.sun.color.getHex() === a.sun.color && Math.abs(r.sun.intensity - a.sun.intensity) < 1e-6;
+      const okFog = r.scene.fog.color.getHex() === a.fog.color;
+      const okStars = Math.abs(r.stars.material.opacity - a.stars) < 1e-6;
+      const okSeats = r.seatMats.every((m, i) => m.color.getHex() === a.seat[i % a.seat.length]);
+      if (!(okSky && okSun && okFog && okStars && okSeats)) throw new Error(`${a.id} sky=${okSky} sun=${okSun} fog=${okFog} stars=${okStars} seats=${okSeats}`);
+      if (r.arena.pads.length !== 34) throw new Error(a.id + ' pads ' + r.arena.pads.length);
+    } catch (e) { themeErr = e; }
+  }
+  console.log('arenas themed', ARENA_LIST.length, 'err', themeErr ? themeErr.message : 'none');
+  if (themeErr) err = err || themeErr;
+  r.setArenaTheme('stadium');
+}
+// ---- garage turntable ----------------------------------------------------
+{
+  const { Car } = await import('../src/physics/car.js');
+  const showCar = new Car(0, 'Showcase', false, { car: 'batmobile', primary: 0x00ff00, finish: 'chrome', wheels: 'neon', trail: 'purple' });
+  showCar.setPose(0, 0, 0.5, 100);
+  r.showcase = { car: showCar };
+  let showErr = null;
+  try {
+    for (let i = 0; i < 40; i++) r.update({ ball: g.ball, cars: [], pads: g.pads, prediction: [], drill: null }, 1 / 60, { followCar: null, mode: 'goalReplay', ballCam: true });
+    const m = r.carMeshes.get(showCar.id);
+    if (!m) throw new Error('showcase car mesh missing');
+    if (m.paintMat.color.getHex() !== 0x00ff00) throw new Error('showcase paint ' + m.paintMat.color.getHex());
+    if (r.ballMesh.visible) throw new Error('ball should be hidden on the turntable');
+    const dist = r.camera.position.distanceTo(showCar.pos);
+    if (dist > 900) throw new Error('turntable camera too far: ' + dist.toFixed(0));
+    console.log('garage turntable cam dist', dist.toFixed(0), 'paint ok, ball hidden');
+  } catch (e) { showErr = e; }
+  console.log('showcase err', showErr ? showErr.message : 'none');
+  if (showErr) err = err || showErr;
+  r.showcase = null;
+  for (let i = 0; i < 3; i++) r.update({ ball: g.ball, cars: [], pads: g.pads, prediction: [], drill: null }, 1 / 60, { followCar: null, mode: 'goalReplay', ballCam: true });
+  if (r.carMeshes.size !== 0) { console.log('showcase mesh not cleaned up'); err = err || new Error('cleanup'); }
+}
+// ---- loadouts + goal explosions in a live match --------------------------
+{
+  const loadoutGame = new Game({ mode: 'match', teamSize: 2, difficulty: 'allstar', duration: 60, humanTeam: 0, loadout: { car: 'merc', primary: 0x123456, finish: 'carbon', wheels: 'offroad', trail: 'ice', explosion: 'lightning' } });
+  let loadErr = null;
+  try {
+    const v = { followCar: loadoutGame.human, mode: 'play', ballCam: true, snap: true };
+    for (let i = 0; i < 120; i++) { loadoutGame.human.controls.throttle = 1; loadoutGame.update(1 / 60); r.update(loadoutGame, 1 / 60, v); v.snap = false; }
+    const mesh = r.carMeshes.get(loadoutGame.human.id);
+    if (!mesh) throw new Error('no mesh for the loadout car');
+    if (mesh.spec.preset.id !== 'merc') throw new Error('mesh built for ' + mesh.spec.preset.id);
+    if (mesh.paintMat.color.getHex() !== 0x123456) throw new Error('loadout paint ignored');
+    if (mesh.flame.material.color.getHex() !== 0x9ff0ff) throw new Error('boost trail ignored');
+    if (!loadoutGame.human.hitbox.half.y > 0) throw new Error('hitbox');
+    for (const kind of ['default', 'fireworks', 'confetti', 'shockwave', 'lightning']) {
+      r.goalExplosion(loadoutGame.ball.pos, 0x2a6cff, kind);
+      r.update(loadoutGame, 1 / 60, v);
+    }
+    console.log('loadout mesh merc paint+trail ok, 5 goal explosions rendered');
+  } catch (e) { loadErr = e; }
+  console.log('loadout err', loadErr ? loadErr.stack.split('\n').slice(0, 3).join(' | ') : 'none');
+  if (loadErr) err = err || loadErr;
+}
 process.exit(err ? 1 : 0);
