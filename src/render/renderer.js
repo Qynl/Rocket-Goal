@@ -533,7 +533,7 @@ export class Renderer {
     }
     for (const w of m.wheels) {
       w.spin.rotation.x = car.wheelSpin;
-      if (w.front) w.pivot.rotation.y = -car.steerVisual * 0.5;
+      if (w.front) w.pivot.rotation.y = car.steerVisual * 0.45;
       // wheel droop in the air
       w.pivot.position.y = car.onGround ? -squat * 0.5 : -4;
     }
@@ -583,7 +583,7 @@ export class Renderer {
       m.group.quaternion.slerpQuaternions(fa.q, fb.q, u);
       for (const w of m.wheels) {
         w.spin.rotation.x = lerp(fa.wheel, fb.wheel, u);
-        if (w.front) w.pivot.rotation.y = -lerp(fa.steer, fb.steer, u) * 0.5;
+        if (w.front) w.pivot.rotation.y = lerp(fa.steer, fb.steer, u) * 0.45;
       }
       m.flame.visible = fa.boost;
       m.flameCore.visible = fa.boost;

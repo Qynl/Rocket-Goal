@@ -194,7 +194,7 @@ export class Input {
       if (gp.airRollLeft) c.roll = -1;
       else if (gp.airRollRight) c.roll = 1;
       else if (gp.airRoll) {
-        c.roll = -gp.steer; // free air roll: stick left => roll left
+        c.roll = gp.steer; // free air roll: stick left => roll left
         c.yaw = 0;
       }
       this.rearView = gp.rearView;
@@ -222,8 +222,8 @@ export class Input {
     if (this.isDown('airRollLeft')) c.roll = -1;
     else if (this.isDown('airRollRight')) c.roll = 1;
     else if (c.handbrake) {
-      // free air roll on the powerslide key (RL default)
-      c.roll = -(right - left);
+      // free air roll on the powerslide key (RL default): A rolls left, D rolls right
+      c.roll = right - left;
       c.yaw = 0;
     }
     this.rearView = this.isDown('rearView');

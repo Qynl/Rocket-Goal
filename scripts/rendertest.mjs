@@ -1,5 +1,5 @@
 // Exercise renderer.js construction & per-frame update with the GL renderer stubbed out.
-import { JSDOM } from '/tmp/jt/node_modules/jsdom/lib/api.js';
+import { JSDOM } from 'jsdom';
 const dom = new JSDOM(`<!doctype html><html><body><canvas id="game"></canvas><div id="ui"></div></body></html>`, { pretendToBeVisual: true });
 const w = dom.window;
 globalThis.window = w; globalThis.document = w.document; globalThis.localStorage = { _d:{}, getItem(k){return this._d[k]??null}, setItem(k,v){this._d[k]=String(v)}, removeItem(k){delete this._d[k]} };

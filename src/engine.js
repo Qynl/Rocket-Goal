@@ -1,34 +1,41 @@
 import { Game } from './game.js';
 import { Renderer } from './render/renderer.js';
 import { Input } from './input.js';
-import { HUD } from './ui/hud.js';
-import { Menus } from './ui/menus.js';
 import { Audio } from './audio.js';
 import { Coach } from './coach.js';
 import { QuickChat } from './chat.js';
-import { TEAM_COLORS, TEAM_NAMES } from './constants.js';
+import { TEAM_COLORS, TEAM_NAMES, BOOST_PADS } from './constants.js';
+import { loadSettings, saveSettings } from './ui/settings.js';
+import { Ball } from './physics/ball.js';
 
-class App {
-  constructor() {
-    this.canvas = document.getElementById('game');
-    this.uiRoot = document.getElementById('ui');
-    this.renderer = new Renderer(this.canvas);
-    this.input = new Input(this.canvas);
+/**
+ * Game engine controller. Owns the simulation, renderer, input and audio and
+ * exposes an imperative API that the React shell (App.jsx) drives. UI screens
+ * are requested through the `onUi` callback.
+ */
+export class Engine {
+  constructor(canvas, hud) {
+    this.canvas = canvas;
+    this.hud = hud;
+    this.renderer = new Renderer(canvas);
+    this.input = new Input(canvas);
     this.audio = new Audio();
-    this.hud = new HUD(this.uiRoot);
-    this.menus = new Menus(this.uiRoot, this);
     this.game = null;
     this.coach = null;
+    this.settings = loadSettings();
+    this.onUi = null; // (payload) => void — set by React
+    this.uiOpen = true; // a menu screen is showing (blocks gameplay hotkeys)
     this.config = null;
     this.view = { ballCam: true, rearView: false, followCar: null, mode: 'play', snap: false };
     this.lastTime = performance.now();
     this.running = false;
     this.replayTimer = 0;
+    this.countdownLast = 4;
 
-    this.renderer.setCameraSettings(this.menus.settings.camera);
-    this.renderer.setQuality(this.menus.settings.quality || 'high');
-    this.renderer.showPrediction = this.menus.settings.showPrediction;
-    this.audio.setVolume(this.menus.settings.volume);
+    this.renderer.setCameraSettings(this.settings.camera);
+    this.renderer.setQuality(this.settings.quality || 'high');
+    this.renderer.showPrediction = this.settings.showPrediction;
+    this.audio.setVolume(this.settings.volume);
 
     this.input.onAction = (a) => {
       if (a === 'ballCam') this.audio.ui();
@@ -39,8 +46,24 @@ class App {
     window.addEventListener('keydown', () => this.audio.resume());
 
     this.hud.setVisible(false);
-    this.menus.main();
     requestAnimationFrame((t) => this.loop(t));
+  }
+
+  ui(payload) {
+    this.uiOpen = payload.type !== 'hide';
+    this.input.enabled = !this.uiOpen && !!this.game;
+    if (this.onUi) this.onUi(payload);
+  }
+
+  /** Apply + persist a settings object (React owns the object; we apply side effects). */
+  applySettings(s) {
+    this.settings = s;
+    saveSettings(s);
+    this.renderer.setCameraSettings(s.camera);
+    this.renderer.setQuality(s.quality || 'high');
+    this.renderer.showPrediction = s.showPrediction;
+    this.audio.setVolume(s.volume);
+    if (this.chat) this.chat.enabled = s.quickChat !== false;
   }
 
   onKey(code) {
@@ -48,7 +71,7 @@ class App {
       if (this.game) this.togglePause();
       return;
     }
-    if (!this.game || this.menus.visible) return;
+    if (!this.game || this.uiOpen) return;
     if (code.startsWith('Digit') && this.chat && this.game.config.mode === 'match') {
       this.chat.humanSay(Number(code.slice(5)));
       this.audio.ui();
@@ -69,29 +92,32 @@ class App {
 
   startGame(config) {
     this.audio.resume();
-    this.config = { ...config, playerName: this.menus.settings.playerName };
+    this.config = { ...config, playerName: this.settings.playerName };
     this.game = new Game(this.config);
     this.coach = new Coach(this.game);
     this.chat = new QuickChat(this.game, this.hud);
-    this.chat.enabled = this.menus.settings.quickChat !== false;
+    this.chat.enabled = this.settings.quickChat !== false;
     this.view.followCar = this.game.human;
     this.view.mode = 'play';
     this.view.snap = true;
     this.input.ballCam = true;
     this.input.enabled = true;
     this.bindGameEvents();
-    this.menus.hide();
+    this.hud.clearFeeds();
     this.hud.setVisible(true);
-    this.hud.feed.innerHTML = '';
-    this.hud.feedItems = [];
-    this.hud.chat.innerHTML = '';
-    this.hud.chatItems = [];
-    this.hud.stats.innerHTML = '';
-    this.hud.statItems = [];
+    this.ui({ type: 'hide' });
     if (config.mode === 'freeplay') this.hud.addFeed('Free play — <b>T</b> resets the ball', 5);
-    if (config.mode === 'drill') this.hud.addFeed(`${this.game.drill.meta.name}: ${this.game.drill.meta.tip}`, 8);
+    if (config.mode === 'drill') {
+      this.hud.addFeed(`${this.game.drill.meta.name}: ${this.game.drill.meta.tip}`, 8);
+      // aerials want the landing marker visible from the start
+      if (this.game.drill.id === 'aerials') {
+        this.renderer.showPrediction = true;
+        this.settings.showPrediction = true;
+      }
+    }
     if (config.mode === 'match') this.hud.addFeed(`${config.teamSize}v${config.teamSize} vs ${this.game.bots[0]?.skill.name || 'bots'} · <b>1–4</b> quick chat`, 4);
     this.running = true;
+    this.lastTime = performance.now();
   }
 
   bindGameEvents() {
@@ -139,7 +165,6 @@ class App {
       if (g.config.mode !== 'match') return;
       const mine = e.car === g.human;
       const teammate = g.human && e.car.team === g.human.team;
-      // show my own events always; teammates' big events too (as RL does)
       if (mine || (teammate && e.points >= 50)) this.hud.addStat(mine ? e.label : `${e.car.name.toUpperCase()} · ${e.label}`, e.points, mine);
       if (mine && e.points >= 20 && e.kind !== 'goal') this.audio.ui();
     });
@@ -148,7 +173,7 @@ class App {
       this.audio.whistle();
     });
     g.on('coach', (e) => {
-      if (this.menus.settings.coach) this.hud.showCoach(e.text, 7);
+      if (this.settings.coach) this.hud.showCoach(e.text, 7);
     });
     g.on('drillResult', (e) => {
       if (e.ok) this.audio.success();
@@ -165,7 +190,8 @@ class App {
       this.input.enabled = false;
       const report = this.coach.report(e.stats);
       this.recordMatch(e.stats);
-      setTimeout(() => this.menus.results(e.stats, report, this.config), 1200);
+      const cfg = this.config;
+      setTimeout(() => this.ui({ type: 'results', stats: e.stats, report, config: cfg }), 1200);
       this.hud.showMessage(e.score[0] === e.score[1] ? 'DRAW' : `${TEAM_NAMES[e.score[0] > e.score[1] ? 0 : 1]} WINS`, e.score[0] > e.score[1] ? 'blue' : 'orange', 3);
       this.audio.whistle();
     });
@@ -215,25 +241,25 @@ class App {
     if (!g || g.state === 'ended') return this.quitToMenu();
     if (g.human && g.score[g.human.team] >= g.score[1 - g.human.team]) g.score[1 - g.human.team] = g.score[g.human.team] + 1;
     g.forfeited = true;
-    this.menus.hide();
+    this.ui({ type: 'hide' });
     g.paused = false;
     g.endMatch();
   }
 
   togglePause() {
     if (!this.game || this.game.state === 'ended') return;
-    if (this.menus.visible) this.resume();
+    if (this.uiOpen) this.resume();
     else this.pause();
   }
   pause() {
     if (!this.game) return;
     this.game.paused = true;
     this.input.enabled = false;
-    this.menus.pause();
+    this.ui({ type: 'pause' });
   }
   resume() {
     if (!this.game) return;
-    this.menus.hide();
+    this.ui({ type: 'hide' });
     this.game.paused = false;
     this.input.enabled = true;
     this.lastTime = performance.now();
@@ -248,13 +274,13 @@ class App {
       this.game = null;
       this.running = false;
       this.hud.setVisible(false);
-      this.menus.drillSummary(drill, cfg);
+      this.ui({ type: 'drillSummary', drill, config: cfg });
       return;
     }
     this.game = null;
     this.running = false;
     this.hud.setVisible(false);
-    this.menus.main();
+    this.ui({ type: 'menu' });
   }
 
   loop(now) {
@@ -270,7 +296,7 @@ class App {
       }
       if (!g.paused) {
         g.update(dt);
-        if (this.coach && g.state === 'play' && this.menus.settings.coach && g.config.mode === 'match') this.coach.update(dt);
+        if (this.coach && g.state === 'play' && this.settings.coach && g.config.mode === 'match') this.coach.update(dt);
       }
       // countdown sounds
       if (g.state === 'countdown') {
@@ -304,8 +330,6 @@ class App {
 }
 
 // A minimal stand-in game object so the renderer can draw the arena behind the menu
-import { Ball } from './physics/ball.js';
-import { BOOST_PADS } from './constants.js';
 const idleGame = {
   ball: new Ball(),
   cars: [],
@@ -314,5 +338,3 @@ const idleGame = {
   drill: null,
 };
 idleGame.ball.pos.set(0, 92.75, 0);
-
-window.app = new App();
