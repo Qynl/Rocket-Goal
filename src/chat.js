@@ -49,6 +49,9 @@ export class QuickChat {
     this.lastBotChat = this.game.time;
     setTimeout(() => {
       if (this.hud) this.hud.addChat(car.name, car.team, text);
+      // online: the host owns the bots, so it also owns their chatter
+      const net = this.game.net;
+      if (net && this.game.netRole === 'host') net.sendChat(car.name, car.team, text);
     }, delay * 1000);
   }
 
@@ -60,7 +63,9 @@ export class QuickChat {
     this.lastHumanChat = now;
     const text = CHATS[n];
     if (!text) return;
-    this.hud.addChat(g.human.name, g.human.team, text);
+    // online: say it to your friend too (net.say also feeds the local HUD)
+    if (g.net) g.net.say(g.human.name, g.human.team, text);
+    else this.hud.addChat(g.human.name, g.human.team, text);
     // bots answer "Thanks!" to compliments, and "Nice shot!" back sometimes
     if (n === 1 || n === 2 || n === 3) this.botSay(this.pickBot(), 'thanks', 0.45, 1.2);
   }

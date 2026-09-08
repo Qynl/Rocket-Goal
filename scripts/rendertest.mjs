@@ -1,5 +1,6 @@
 // Exercise renderer.js construction & per-frame update with the GL renderer stubbed out.
 import { JSDOM } from 'jsdom';
+import * as THREE from 'three';
 const dom = new JSDOM(`<!doctype html><html><body><canvas id="game"></canvas><div id="ui"></div></body></html>`, { pretendToBeVisual: true });
 const w = dom.window;
 globalThis.window = w; globalThis.document = w.document; globalThis.localStorage = { _d:{}, getItem(k){return this._d[k]??null}, setItem(k,v){this._d[k]=String(v)}, removeItem(k){delete this._d[k]} };
@@ -53,6 +54,62 @@ console.log('frames rendered', stub.rendered, 'car meshes', r.carMeshes.size, 'p
   const b = r.ballScreen;
   console.log('ballScreen ahead', a && `x=${a.x.toFixed(2)} y=${a.y.toFixed(2)} on=${a.onScreen}`, '| behind', b && `x=${b.x.toFixed(2)} y=${b.y.toFixed(2)} on=${b.onScreen} behind=${b.behind}`);
   if (!a || !a.onScreen || !b || b.onScreen || !b.behind) { console.log('BALL SCREEN CHECK FAILED'); err = err || new Error('ballScreen'); }
+}
+// ---- ground blob + soft sprites ------------------------------------------
+{
+  const g3 = new Game({ mode: 'freeplay', humanTeam: 0 });
+  const v3 = { followCar: g3.human, mode: 'play', ballCam: false, snap: true };
+  const m = r.getCarMesh(g3.human);
+  const bad = [];
+  // the blob is a scene object: parented to the chassis it would tilt with every
+  // jump and hang in the air during an aerial (the old "blue slab" artefact)
+  if (m.glow.parent === m.group) bad.push('blob is parented to the chassis');
+  else if (m.glow.parent !== r.scene) bad.push('blob is not in the scene');
+  if (Math.abs(m.glow.rotation.x + Math.PI / 2) > 1e-6) bad.push('blob is not flat on the floor');
+  if (!m.glow.material.map) bad.push('blob has no soft texture (hard-edged quad)');
+  if (m.glow.material.blending === THREE.AdditiveBlending) bad.push('blob is additive (washes out on bright floors)');
+
+  g3.human.setPose(0, -1000, 0, 33);
+  for (let i = 0; i < 40; i++) { g3.update(1 / 60); r.update(g3, 1 / 60, v3); }
+  if (!m.glow.visible) bad.push('blob hidden while the car is on the ground');
+  if (Math.abs(m.glow.position.y) > 3) bad.push(`blob floats at y=${m.glow.position.y.toFixed(2)} instead of on the floor`);
+  if (!(m.glow.material.opacity > 0.35)) bad.push(`blob too faint on the ground: ${m.glow.material.opacity.toFixed(2)}`);
+  if (Math.abs(m.glow.position.x - g3.human.pos.x) > 1 || Math.abs(m.glow.position.z - g3.human.pos.z) > 1) bad.push('blob is not under the car');
+  const groundOpacity = m.glow.material.opacity;
+
+  // airborne: the glow must fade out, not follow the car into the sky
+  g3.human.pos.y = 900;
+  g3.human.onGround = false;
+  for (let i = 0; i < 40; i++) r.update(g3, 1 / 60, v3);
+  if (m.glow.visible) bad.push(`blob still drawn ${g3.human.pos.y.toFixed(0)} uu up in the air`);
+  if (m.glow.material.opacity > groundOpacity) bad.push('blob got brighter while airborne');
+
+  // halfway up it should be partway faded, and a little wider (light spreads)
+  g3.human.pos.y = 200;
+  for (let i = 0; i < 40; i++) r.update(g3, 1 / 60, v3);
+  if (!(m.glow.material.opacity < groundOpacity) && m.glow.visible) bad.push('blob does not fade with height');
+
+  // demolished cars cast nothing
+  g3.human.pos.y = 17;
+  g3.human.demolished = true;
+  for (let i = 0; i < 5; i++) r.update(g3, 1 / 60, v3);
+  if (m.glow.visible) bad.push('blob still drawn for a demolished car');
+  g3.human.demolished = false;
+
+  // soft sprites everywhere a hard quad used to be
+  if (!r.ballShadow.material.map) bad.push('ball shadow has no soft texture');
+  if (!r.getParticle().mesh.material.map) bad.push('particles have no soft sprite');
+
+  // reflections belong to the arena: changing theme must rebuild the env map
+  let envCalls = 0;
+  const realBuild = r.buildEnvironment.bind(r);
+  r.buildEnvironment = (t) => { envCalls++; return realBuild(t); };
+  r.setArenaTheme(r.themeName === 'stadium' ? 'dfh' : 'stadium');
+  r.buildEnvironment = realBuild;
+  if (envCalls !== 1) bad.push(`setArenaTheme rebuilt the environment ${envCalls} times, expected 1`);
+
+  console.log(bad.length ? `GROUND BLOB CHECKS FAILED: ${bad.join('; ')}` : 'ground blob + soft sprites ok');
+  if (bad.length) err = err || new Error('groundBlob');
 }
 // ---- arena themes --------------------------------------------------------
 {

@@ -25,6 +25,7 @@ const { Input } = await import('../src/input.js');
 const { Game } = await import('../src/game.js');
 const { Coach } = await import('../src/coach.js');
 const { defaultMutators, describe: describeMutators } = await import('../src/mutators.js');
+const { DRILLS } = await import('../src/training.js');
 const { CARS } = await import('../src/cars.js');
 const { loadProfile, awardMatch, rankOf, levelOf } = await import('../src/progress.js');
 
@@ -75,16 +76,30 @@ await tryasync('match setup flow', async () => {
   await sleep(30);
   if (!fakeEngine.started || fakeEngine.started.mode !== 'match') throw new Error('not started');
 });
-await tryasync('training screen + aerials drill', async () => {
+// derive the count from the drill list so adding a drill cannot silently break it
+const startDrillByCard = async (id) => {
   renderUi({ type: 'training' });
   await sleep(30);
-  if (document.querySelectorAll('.card').length !== 7) throw new Error('drill cards');
-  document.querySelectorAll('.card')[2].click(); // aerials
+  const cards = document.querySelectorAll('.card');
+  if (cards.length !== DRILLS.length) throw new Error(`drill cards: ${cards.length} rendered, ${DRILLS.length} in DRILLS`);
+  const idx = DRILLS.findIndex((d) => d.id === id);
+  if (idx < 0) throw new Error(`no such drill: ${id}`);
+  cards[idx].click();
   await sleep(30);
   const btn = Array.from(document.querySelectorAll('button')).find((b) => b.textContent === 'Start drill');
+  if (!btn) throw new Error(`no Start drill button for ${id}`);
+  fakeEngine.started = null;
   btn.click();
   await sleep(30);
-  if (!fakeEngine.started || fakeEngine.started.drill !== 'aerials') throw new Error('drill ' + fakeEngine.started?.drill);
+  if (!fakeEngine.started || fakeEngine.started.drill !== id) throw new Error(`started ${fakeEngine.started?.drill} instead of ${id}`);
+  return true;
+};
+await tryasync('training screen + aerials drill', () => startDrillByCard('aerials'));
+// the two new aerial drills must be reachable from the menu and start correctly
+await tryasync('training screen + air shots drill', () => startDrillByCard('airshots'));
+await tryasync('training screen + aerial saves drill', () => startDrillByCard('aerialsaves'));
+await tryasync('every drill in the list is reachable from the training screen', async () => {
+  for (const d of DRILLS) await startDrillByCard(d.id);
 });
 await tryasync('progress + howto + settings tabs', async () => {
   for (const type of ['progress', 'howto', 'settings']) {

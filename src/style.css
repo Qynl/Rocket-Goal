@@ -1200,3 +1200,174 @@ table.stats tr.me td {
   overflow: hidden;
   text-overflow: ellipsis;
 }
+
+/* ==========================================================================
+   Online (peer-to-peer) — menu + HUD
+   ========================================================================== */
+.net-why {
+  font-size: 14px;
+  line-height: 1.55;
+}
+.net-step {
+  background: rgba(10, 16, 34, 0.6);
+  border: 1px solid rgba(140, 170, 255, 0.16);
+  border-radius: 10px;
+  padding: 12px 14px;
+}
+.net-step label {
+  font-size: 14px;
+  color: var(--muted);
+  letter-spacing: 0.04em;
+  margin-bottom: 8px;
+  display: block;
+}
+.net-step label b {
+  display: inline-block;
+  min-width: 22px;
+  height: 22px;
+  line-height: 22px;
+  text-align: center;
+  margin-right: 8px;
+  border-radius: 50%;
+  background: linear-gradient(180deg, #3a8bff, #1f5fd6);
+  color: #fff;
+  font-family: var(--font-display);
+}
+.net-code {
+  width: 100%;
+  resize: vertical;
+  min-height: 84px;
+  font-family: ui-monospace, 'SF Mono', 'Cascadia Mono', Menlo, Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.5;
+  letter-spacing: 0.02em;
+  color: #d8e6ff;
+  background: rgba(4, 7, 16, 0.85);
+  border: 1px solid rgba(140, 170, 255, 0.22);
+  border-radius: 8px;
+  padding: 10px;
+  user-select: text;
+  word-break: break-all;
+}
+.net-code:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px rgba(68, 255, 204, 0.15);
+}
+.net-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+  color: var(--muted);
+  background: rgba(10, 16, 34, 0.6);
+  border: 1px solid rgba(140, 170, 255, 0.16);
+  border-radius: 8px;
+  padding: 9px 14px;
+}
+.net-status .dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--muted);
+  box-shadow: 0 0 10px currentColor;
+  flex: 0 0 auto;
+}
+.net-status.good {
+  color: #d3ffe4;
+  border-color: rgba(74, 222, 128, 0.4);
+}
+.net-status.good .dot {
+  background: var(--good);
+  animation: netpulse 1.6s ease-in-out infinite;
+}
+.net-status.bad {
+  color: #ffd9e1;
+  border-color: rgba(255, 77, 109, 0.45);
+  background: rgba(60, 12, 24, 0.5);
+}
+.net-status.bad .dot {
+  background: var(--danger);
+}
+@keyframes netpulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
+}
+.good {
+  color: var(--good);
+}
+.warn {
+  color: #ffd166;
+}
+.bad {
+  color: var(--danger);
+}
+
+/* HUD connection read-out */
+#hud .netinfo {
+  position: absolute;
+  right: 24px;
+  top: 24px;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 5px 11px;
+  border-radius: 20px;
+  background: rgba(8, 12, 24, 0.62);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  font-size: 13px;
+  letter-spacing: 0.04em;
+  color: var(--text);
+}
+#hud .netinfo small {
+  color: var(--muted);
+  font-size: 11px;
+  max-width: 110px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+#hud .netinfo .bars {
+  display: flex;
+  align-items: flex-end;
+  gap: 2px;
+  height: 13px;
+}
+#hud .netinfo .bars i {
+  width: 3px;
+  background: currentColor;
+  border-radius: 1px;
+  opacity: 0.28;
+}
+#hud .netinfo .bars i:nth-child(1) {
+  height: 5px;
+}
+#hud .netinfo .bars i:nth-child(2) {
+  height: 9px;
+}
+#hud .netinfo .bars i:nth-child(3) {
+  height: 13px;
+}
+#hud .netinfo.q3 {
+  color: var(--good);
+}
+#hud .netinfo.q2 {
+  color: #ffd166;
+}
+#hud .netinfo.q1 {
+  color: var(--danger);
+}
+#hud .netinfo.q3 .bars i {
+  opacity: 1;
+}
+#hud .netinfo.q2 .bars i:nth-child(-n + 2) {
+  opacity: 1;
+}
+#hud .netinfo.q1 .bars i:nth-child(1) {
+  opacity: 1;
+}

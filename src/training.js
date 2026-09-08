@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { ARENA, BALL, TEAM, CAR } from './constants.js';
+import { ARENA, BALL, TEAM, CAR, GRAVITY } from './constants.js';
 import { rand, randSign, clamp } from './math.js';
 
 const STORAGE = 'rocketgoal.training.v1';
@@ -38,6 +38,22 @@ export const DRILLS = [
     icon: '🚀',
     desc: 'Balls lobbed into the air — straight lobs, side aerials, drifting balls and ceiling drop shots. The landing marker shows where to meet it.',
     tip: 'Jump, hold, tilt your nose toward where the ball will be, then feather the boost. Fix your angle early, not late. Powerslide + A/D air-rolls.',
+    hasBots: false,
+  },
+  {
+    id: 'airshots',
+    name: 'Air Shots',
+    icon: '🎯',
+    desc: 'Balls lofted into the shooting lane. Meet them in the air and put them on goal — the ring shows the contact point, the marker on the floor shows where it lands. A goalie joins from level 4.',
+    tip: 'Leave early and arrive level with the ball. Point your nose at the goal before contact, then feather boost — a full-boost aerial overshoots the ball.',
+    hasBots: true,
+  },
+  {
+    id: 'aerialsaves',
+    name: 'Aerial Saves',
+    icon: '🧤',
+    desc: 'High balls dropping into your own box, the ones you have to go up for. Clear them wide and in the air — from level 4 a ground punch does not count.',
+    tip: 'Back off and get under the drop, then jump into it. Clear to the side walls: a save straight up the middle is just a second shot.',
     hasBots: false,
   },
   {
@@ -82,6 +98,10 @@ export function createDrill(id, game) {
       return new SavesDrill(game);
     case 'aerials':
       return new AerialDrill(game);
+    case 'airshots':
+      return new AirShotsDrill(game);
+    case 'aerialsaves':
+      return new AerialSavesDrill(game);
     case 'dribbling':
       return new DribbleDrill(game);
     case 'kickoffs':
@@ -218,6 +238,64 @@ class Drill {
     return [`Level ${this.level}`, `${this.successes}/${this.attempts}  (${Math.round(this.accuracy * 100)}%)`, `Streak ${this.streak}  Best ${this.bestStreak}`];
   }
   placeBots() {}
+
+  /**
+   * Where the ball is going to come down, from the real ball physics (drag and
+   * bounces included). Aerial drills live or die on reading this, so it is worth
+   * the cost of a short prediction — throttled to every 4th frame.
+   */
+  landingPoint(horizon = 3.5) {
+    const pred = this.ball.predict(horizon, 1 / 20);
+    for (const p of pred) if (p.pos.y <= BALL.RADIUS + 30) return p;
+    return pred[pred.length - 1];
+  }
+
+  /**
+   * Keep a flat ring on the floor under the ball's predicted landing spot, and
+   * (optionally) a vertical ring in the air where it should be met. The ground
+   * ring is the one that teaches timing: you leave when the marker is still far
+   * enough away that you arrive as the ball does.
+   */
+  showLandingMarker(ground = 250, contact = null) {
+    this._markerTick = (this._markerTick || 0) + 1;
+    if (this._markerTick % 4 !== 1 && this.rings.length) return;
+    const p = this.landingPoint();
+    let ring = this.rings.find((r) => r.landing);
+    if (!ring) {
+      ring = { x: p.pos.x, y: 0, z: p.pos.z, r: ground, done: false, landing: true };
+      this.rings.push(ring);
+    } else {
+      ring.x = p.pos.x;
+      ring.z = p.pos.z;
+      ring.r = ground;
+      ring.done = false;
+    }
+    if (contact) {
+      let c = this.rings.find((r) => r.contact);
+      if (!c) {
+        c = { x: contact.x, y: contact.y, z: contact.z, r: 230, done: false, contact: true };
+        this.rings.push(c);
+      } else {
+        c.x = contact.x;
+        c.y = contact.y;
+        c.z = contact.z;
+        c.done = this.contactDone;
+      }
+    }
+  }
+
+  /**
+   * Solve a lob: launch speed that puts the apex at `peak` uu, and the z speed
+   * that makes the ball come down on `toZ` (the apex is halfway, so it lands
+   * where you aimed). Drag makes the real ball fall a little short of this,
+   * which is fine — the drills want a readable arc, not a solved trajectory.
+   */
+  lobTo(fromY, peak, fromZ, toZ) {
+    const vy = Math.sqrt(2 * GRAVITY * Math.max(60, peak - fromY));
+    const t = vy / GRAVITY;
+    const vz = (toZ - fromZ) / (2 * t);
+    return { vy, vz, t };
+  }
 }
 
 const CAR_Z = (z) => z;
@@ -228,6 +306,8 @@ class ShootingDrill extends Drill {
   constructor(game) {
     super(game, 'shooting');
     this.attemptLimit = 9;
+    this.aerialFeed = false;
+    this.aerialContact = 0;
   }
   setup() {
     const s = this.humanSign;
@@ -249,7 +329,24 @@ class ShootingDrill extends Drill {
     const d = Math.hypot(dx, dz);
     const vy = L >= 2 ? rand(0, 250 + L * 120) : 0;
     const y = L >= 3 ? rand(BALL.RADIUS, 200 + L * 150) : BALL.RADIUS;
-    this.placeBall(bx, y, bz, (dx / d) * speed, vy, (dz / d) * speed);
+    // From level 3 a third of the feeds are aerial: the ball is lofted into the
+    // lane instead of rolled along the floor, so Shooting actually asks you to
+    // leave the ground. Air Shots is the dedicated version of this.
+    this.aerialFeed = L >= 3 && Math.random() < 0.34;
+    this.rings = [];
+    this.contactDone = false;
+    if (this.aerialFeed) {
+      const peak = 430 + L * 95;
+      const y0 = BALL.RADIUS + 30;
+      const lob = this.lobTo(y0, peak, bz, s * (ARENA.HALF_LENGTH - rand(1400, 2600)));
+      const drift = rand(-1, 1) * (40 + L * 30);
+      this.placeBall(bx, y0, bz, drift, lob.vy, lob.vz);
+      this.minHeight = Math.max(260, Math.round(peak * 0.55));
+      this.contactRing = { x: bx + drift * lob.t, y: Math.min(peak, 1000), z: (bz + s * (ARENA.HALF_LENGTH - 2000)) / 2, r: 240 };
+      if (this.message !== undefined) this.say('Aerial ball — get up to it!', 1.4);
+    } else {
+      this.placeBall(bx, y, bz, (dx / d) * speed, vy, (dz / d) * speed);
+    }
     // goalie bot on levels 4+
     for (const bot of this.game.bots) {
       const car = bot.car;
@@ -270,12 +367,24 @@ class ShootingDrill extends Drill {
     }
   }
   onTouch(car) {
-    if (car === this.human) this.touched = true;
+    if (car === this.human) {
+      this.touched = true;
+      this.contactDone = true;
+      this.aerialContact = this.aerialFeed ? this.ball.pos.y : 0;
+    }
   }
   updateAttempt() {
+    if (this.aerialFeed) this.showLandingMarker(240, this.contactRing);
     if (this.ballInEnemyGoal()) {
       const spd = this.ball.vel.length();
-      const fb = spd > 3000 ? 'Rocket!' : spd > 2000 ? 'Powerful.' : 'In — try hitting it harder.';
+      const air = this.aerialContact > 0;
+      const fb = air
+        ? `Air shot! Met it at ${Math.round(this.aerialContact)} uu.`
+        : spd > 3000
+          ? 'Rocket!'
+          : spd > 2000
+            ? 'Powerful.'
+            : 'In — try hitting it harder.';
       this.finishAttempt(true, fb);
       return;
     }
@@ -291,6 +400,8 @@ class SavesDrill extends Drill {
   constructor(game) {
     super(game, 'saves');
     this.attemptLimit = 6;
+    this.aerialFeed = false;
+    this.aerialContact = 0;
   }
   setup() {
     const s = this.humanSign;
@@ -311,17 +422,41 @@ class SavesDrill extends Drill {
     const d = Math.hypot(dx, dz);
     const t = d / speed;
     // simple ballistic solve for vy to reach targetY
-    const vy = (targetY - y + 0.5 * 650 * t * t) / t;
-    this.placeBall(bx, y, bz, (dx / d) * speed, L >= 2 ? vy : 0, (dz / d) * speed);
+    const vy = (targetY - y + 0.5 * GRAVITY * t * t) / t;
+    // From level 3 some of the shots arrive as high balls dropping into the box
+    // rather than driven shots: those are the ones a keeper has to go up for,
+    // and they were the missing half of this drill. Aerial Saves drills them on
+    // their own.
+    this.aerialFeed = L >= 3 && Math.random() < 0.4;
+    this.rings = [];
+    this.contactDone = false;
+    if (this.aerialFeed) {
+      const peak = 620 + L * 120;
+      const y0 = BALL.RADIUS + 30;
+      const fromZ = -s * rand(1300, 2500);
+      const landZ = -s * (ARENA.HALF_LENGTH - rand(200, 900));
+      const lob = this.lobTo(y0, peak, fromZ, landZ);
+      const drift = rand(-1, 1) * (30 + L * 40);
+      this.placeBall(clamp(bx, -3000, 3000), y0, fromZ, drift, lob.vy, lob.vz);
+      this.minHeight = Math.max(300, Math.round(peak * 0.55));
+      this.contactRing = { x: bx + drift * lob.t, y: Math.min(peak, 950), z: (fromZ + landZ) / 2, r: 250 };
+      this.flightTime = 2 * lob.t;
+      this.say('High ball — get under it and go up!', 1.5);
+    } else {
+      this.placeBall(bx, y, bz, (dx / d) * speed, L >= 2 ? vy : 0, (dz / d) * speed);
+    }
     this.shotDist = dist;
   }
   onTouch(car) {
     if (car === this.human) {
       this.touched = true;
+      this.contactDone = true;
       this.touchPos = this.ball.pos.clone();
+      this.aerialContact = this.aerialFeed ? this.ball.pos.y : 0;
     }
   }
   updateAttempt() {
+    if (this.aerialFeed) this.showLandingMarker(260, this.contactRing);
     if (this.ballInOwnGoal()) {
       this.finishAttempt(false, this.touched ? 'Touched but not cleared.' : 'Beat you — get to the ball earlier.');
       return;
@@ -335,10 +470,14 @@ class SavesDrill extends Drill {
       const far = b.pos.z * s > -ARENA.HALF_LENGTH + 2500;
       if ((awayZ > 500 && (wide || far)) || this.attemptTime - this.firstTouchTime() > 2.5) {
         const cornerClear = wide && awayZ > 300;
-        this.finishAttempt(true, cornerClear ? 'Great clear to the side.' : 'Saved — but clear it wide, not up the middle.');
+        const airNote = this.aerialFeed ? ` Met it at ${Math.round(this.aerialContact)} uu${this.aerialContact >= this.minHeight ? ' — in the air, that is the way.' : ', below the drop: get up to it next time.'}` : '';
+        this.finishAttempt(true, (cornerClear ? 'Great clear to the side.' : 'Saved — but clear it wide, not up the middle.') + airNote);
       }
     }
     if (!this.touched && this.attemptTime > 4 && this.ball.vel.length() < 100) this.finishAttempt(true, 'Ball died — lucky.');
+    if (!this.touched && this.aerialFeed && this.ball.pos.y < 160 && this.ball.vel.y < 0 && this.attemptTime > this.flightTime * 0.9) {
+      this.finishAttempt(false, 'It dropped past you. Read the landing marker and move early — you cannot reach a high ball from a standing start.');
+    }
   }
   firstTouchTime() {
     if (this._ft === undefined && this.touched) this._ft = this.attemptTime;
@@ -371,11 +510,18 @@ class AerialDrill extends Drill {
     const vz = L >= 4 ? s * rand(250, 480) : s * rand(-160, 160) * (L >= 3 ? 2.2 : 1);
     this.placeBall(clamp(bx, -3500, 3500), BALL.RADIUS + 50, bz, vx, vy, vz);
     this.minHeight = L >= 3 ? 500 : 350;
-    this.peak = BALL.RADIUS + 50 + (vy * vy) / (2 * 650);
+    this.peak = BALL.RADIUS + 50 + (vy * vy) / (2 * GRAVITY);
+    this.rings = [];
+    this.contactDone = false;
+    // the ring in the air marks the apex — the point this drill has always
+    // advertised ("the landing marker shows where to meet it") but never drew
+    const tApex = vy / GRAVITY;
+    this.contactRing = { x: clamp(bx, -3500, 3500) + vx * tApex, y: Math.min(this.peak, 1100), z: bz + vz * tApex, r: 250 };
   }
   onTouch(car) {
     if (car === this.human && !this.touched) {
       this.touched = true;
+      this.contactDone = true;
       const h = this.ball.pos.y;
       const air = Math.max(0, this.human.airTime);
       const aerial = h > this.minHeight;
@@ -403,12 +549,217 @@ class AerialDrill extends Drill {
   }
   updateAttempt(dt) {
     this.airTime = Math.max(this.airTime, this.human.airTime);
+    // the landing marker is the teaching aid: leave when it is still far enough
+    // away that you and the ball arrive at the same moment
+    this.showLandingMarker(240, this.contactRing);
     if (!this.touched && this.ball.pos.y < 200 && this.ball.vel.y < 0 && this.attemptTime > 1.5) {
       this.finishAttempt(false, 'Missed. Jump earlier, tilt the nose up and commit with boost.');
     }
   }
   nextAttempt() {
     this.airTime = 0;
+    this.rings = [];
+    super.nextAttempt();
+  }
+}
+
+// ---------------------------------------------------------------------------
+/**
+ * Air shots: the ball is lofted into the shooting lane and has to be met in the
+ * air and put on goal. This is the piece the Shooting drill cannot teach — there
+ * the ball is on the floor or bouncing, so you never have to leave the ground.
+ */
+class AirShotsDrill extends Drill {
+  constructor(game) {
+    super(game, 'airshots');
+    this.attemptLimit = 12;
+    this.airTime = 0;
+    this.contactHeight = 0;
+  }
+  setup() {
+    const s = this.humanSign;
+    const L = this.level;
+    this.rings = [];
+    this.contactHeight = 0;
+    this.airTime = 0;
+    this.contactDone = false;
+    // start behind and below the feed, facing their goal
+    this.placeCar(rand(-1300, 1300), -s * rand(1500, 2600), s === 1 ? 0 : Math.PI, 100);
+    // Apex height the ball has to be met at, and how far in front of us it hangs
+    const peak = 420 + L * 105; // 525 .. 945 uu
+    const ahead = 1250 + L * 150;
+    const y0 = BALL.RADIUS + 40;
+    const bx = clamp(this.human.pos.x + rand(-450, 450), -3200, 3200);
+    const bz = this.human.pos.z + s * ahead;
+    // The apex sits over the shooting lane and the ball drifts on toward goal
+    // afterwards, so a clean contact through the middle of the ring ends up on
+    // target without the player having to twist in the air.
+    const vy = Math.sqrt(2 * GRAVITY * Math.max(60, peak - y0));
+    const t = vy / GRAVITY; // time to the apex: how long the player has to leave
+    const vz = s * (140 + L * 65) + rand(-30, 30); // toward their goal
+    const vx = L >= 3 ? rand(-1, 1) * (50 + L * 40) : rand(-25, 25);
+    this.placeBall(bx, y0, bz, vx, vy, vz);
+    this.flightTime = 2 * t;
+    // The bar is a fraction of the apex, not a fixed offset below it: meeting the
+    // ball on the way down is still an aerial, and a threshold pinned just under
+    // the apex turns good attempts into "ground hit" nonsense.
+    this.minHeight = Math.max(260, Math.round(peak * 0.55));
+    // the ring in the air is where the contact should happen: apex of the arc
+    this.contactRing = { x: bx + vx * t, y: peak, z: bz + vz * t, r: 240 };
+    // a goalie from level 4, as in Shooting
+    for (const bot of this.game.bots) {
+      const car = bot.car;
+      if (car.team === this.human.team) {
+        car.demolish();
+        car.respawnTimer = 999;
+        continue;
+      }
+      if (L >= 4) {
+        car.demolished = false;
+        car.setPose(rand(-650, 650), s * (ARENA.HALF_LENGTH - 480), s === 1 ? Math.PI : 0, L >= 5 ? 60 : 20);
+        bot.role = 'defend';
+        bot.maneuver = null;
+      } else {
+        car.demolish();
+        car.respawnTimer = 999;
+      }
+    }
+  }
+  onTouch(car) {
+    if (car !== this.human || this.touched) return;
+    this.touched = true;
+    this.contactHeight = this.ball.pos.y;
+    this.contactDone = true;
+    this.airAtContact = Math.max(0, this.human.airTime);
+  }
+  note() {
+    return `${Math.round(this.contactHeight)} uu high · ${(this.airAtContact || 0).toFixed(1)}s of air · ${Math.round(this.human.boost)} boost left`;
+  }
+  updateAttempt(dt) {
+    this.airTime = Math.max(this.airTime, this.human.airTime);
+    this.showLandingMarker(250, this.contactRing);
+    const s = this.humanSign;
+    if (this.ballInEnemyGoal()) {
+      const aerial = this.contactHeight >= this.minHeight;
+      this.finishAttempt(true, aerial ? `Air shot — top stuff. ${this.note()}` : `In, but that was a ground hit at ${Math.round(this.contactHeight)} uu. Meet it above ${Math.round(this.minHeight)}.`);
+      return;
+    }
+    if (this.ballInOwnGoal()) {
+      this.finishAttempt(false, 'Own goal — get your body between the ball and your net.');
+      return;
+    }
+    if (this.touched) {
+      const toward = this.ball.vel.z * s > 500;
+      const fast = this.ball.vel.length() > 1100;
+      const h = this.contactHeight;
+      if (h >= this.minHeight) {
+        if (toward && fast) this.finishAttempt(true, `Clean air shot on target. ${this.note()}`);
+        else this.finishAttempt(false, `Good height, no direction. ${this.note()} Turn your nose toward the goal before you arrive, not after.`);
+      } else if (h > 240) {
+        this.finishAttempt(false, `${Math.round(h)} uu — just under the ${Math.round(this.minHeight)} uu target. Leave a beat earlier so you meet it at the top of its arc instead of on the way down.`);
+      } else {
+        this.finishAttempt(false, `That was a ground hit at ${Math.round(h)} uu — the ball was above you. Jump into it and meet it at ${Math.round(this.minHeight)}+.`);
+      }
+      return;
+    }
+    if (this.ball.pos.y < 180 && this.ball.vel.y < 0 && this.attemptTime > 1.6) {
+      this.finishAttempt(false, 'Missed it. Read the landing marker and leave early — you cannot catch up in the air.');
+    }
+  }
+  hudLines() {
+    return [...super.hudLines(), `Meet it above ${Math.round(this.minHeight)} uu`, `Air time ${this.airTime.toFixed(1)}s`];
+  }
+}
+
+// ---------------------------------------------------------------------------
+/**
+ * Aerial saves: high balls dropping into your own box, the ones a keeper has to
+ * go up for. The Goalkeeping drill drives shots at a target height; this one
+ * makes you leave the ground to clear them.
+ */
+class AerialSavesDrill extends Drill {
+  constructor(game) {
+    super(game, 'aerialsaves');
+    this.attemptLimit = 10;
+    this.airTime = 0;
+    this.contactHeight = 0;
+  }
+  setup() {
+    const s = this.humanSign;
+    const L = this.level;
+    this.rings = [];
+    this.contactHeight = 0;
+    this.airTime = 0;
+    this.contactDone = false;
+    this._ft = undefined;
+    // keeper in front of the net, facing the field
+    this.placeCar(rand(-500, 500), -s * (ARENA.HALF_LENGTH - rand(450, 950)), s === 1 ? 0 : Math.PI, 100);
+    // the lob is launched from out in the defensive half and drops into the box
+    const y0 = BALL.RADIUS + 30;
+    const peak = 560 + L * 130; // 690 .. 1210 uu
+    const fromZ = -s * rand(1500 + L * 120, 2700 + L * 200);
+    // where it comes down: shallow and well in front of the line at level 1 (time
+    // to read it), then progressively deeper until it drops inside the goal
+    const depth = L >= 4 ? rand(-450, 350) : L >= 3 ? rand(250, 900) : rand(800, 1600);
+    const landZ = -s * (ARENA.HALF_LENGTH - depth);
+    const lob = this.lobTo(y0, peak, fromZ, landZ, s);
+    const { vy, vz, t } = lob;
+    const vx = L >= 3 ? rand(-1, 1) * (60 + L * 55) : rand(-30, 30);
+    const bx = clamp(rand(-1500, 1500), -3400, 3400);
+    this.placeBall(bx, y0, fromZ, vx, vy, vz);
+    this.minHeight = Math.max(300, Math.round(peak * 0.55));
+    this.contactRing = { x: bx + vx * t, y: Math.min(peak, 900), z: (fromZ + landZ) / 2, r: 250 };
+    this.flightTime = 2 * t;
+  }
+  onTouch(car) {
+    if (car !== this.human || this.touched) return;
+    this.touched = true;
+    this.contactHeight = this.ball.pos.y;
+    this.contactDone = true;
+    this.airAtContact = Math.max(0, this.human.airTime);
+    this._ft = this.attemptTime;
+  }
+  updateAttempt(dt) {
+    this.airTime = Math.max(this.airTime, this.human.airTime);
+    this.showLandingMarker(260, this.contactRing);
+    const s = this.humanSign;
+    const b = this.ball;
+    if (this.ballInOwnGoal()) {
+      this.finishAttempt(false, this.touched ? `Touched at ${Math.round(this.contactHeight)} uu and it still went in — clear it wide, not straight up.` : 'It dropped in untouched. Get under the ball early: leave before it starts falling.');
+      return;
+    }
+    if (this.touched) {
+      const away = b.vel.z * s > 250; // upfield, away from our net
+      const wide = Math.abs(b.pos.x) > 1100;
+      const out = b.pos.z * s > -(ARENA.HALF_LENGTH - 2000);
+      const settled = this.attemptTime - (this._ft ?? this.attemptTime) > 2.2;
+      if ((away && (wide || out)) || settled) {
+        const aerial = this.contactHeight >= this.minHeight;
+        const strict = this.level >= 4;
+        if (!aerial && strict) {
+          this.finishAttempt(false, `You met it at ${Math.round(this.contactHeight)} uu. At this level the ball has to be cleared in the air — jump into it, above ${Math.round(this.minHeight)} uu.`);
+        } else if (aerial && away && (wide || out)) {
+          this.finishAttempt(true, `Aerial save, cleared wide at ${Math.round(this.contactHeight)} uu. ${this.airAtContact.toFixed(1)}s of air.`);
+        } else if (aerial) {
+          this.finishAttempt(true, `Aerial save at ${Math.round(this.contactHeight)} uu — now send it wide, not up the middle.`);
+        } else {
+          this.finishAttempt(true, `Cleared, but from ${Math.round(this.contactHeight)} uu. Get up to it: the higher you meet it, the earlier the danger is gone.`);
+        }
+      }
+      return;
+    }
+    if (b.pos.y < 160 && b.vel.y < 0 && this.attemptTime > this.flightTime * 0.9) {
+      this.finishAttempt(false, 'Never got to it. Watch the landing marker — that is where you have to be, so start moving before it drops.');
+    }
+  }
+  firstTouchTime() {
+    return this._ft ?? this.attemptTime;
+  }
+  hudLines() {
+    return [...super.hudLines(), `Clear it above ${Math.round(this.minHeight)} uu`, `Air time ${this.airTime.toFixed(1)}s`];
+  }
+  nextAttempt() {
+    this._ft = undefined;
     super.nextAttempt();
   }
 }

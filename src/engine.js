@@ -6,10 +6,13 @@ import { Coach } from './coach.js';
 import { QuickChat } from './chat.js';
 import { TEAM_COLORS, TEAM_NAMES, BOOST_PADS, CAR } from './constants.js';
 import { loadSettings, saveSettings } from './ui/settings.js';
+import { NetSession } from './net/session.js';
+import { P2PConnection, P2P_FAIL_MESSAGE } from './net/connection.js';
 import { Ball } from './physics/ball.js';
 import { Car } from './physics/car.js';
 import { ITEMS } from './rumble.js';
 import { awardMatch } from './progress.js';
+import { escapeHtml } from './ui/hudStore.js';
 
 /**
  * Game engine controller. Owns the simulation, renderer, input and audio and
@@ -17,10 +20,12 @@ import { awardMatch } from './progress.js';
  * are requested through the `onUi` callback.
  */
 export class Engine {
-  constructor(canvas, hud) {
+  constructor(canvas, hud, glRenderer = null) {
     this.canvas = canvas;
     this.hud = hud;
-    this.renderer = new Renderer(canvas);
+    // glRenderer is only injected by the headless tests (scripts/*test.mjs); the
+    // browser always passes null and gets a real WebGLRenderer.
+    this.renderer = new Renderer(canvas, glRenderer);
     this.input = new Input(canvas);
     this.audio = new Audio();
     this.game = null;
@@ -34,6 +39,7 @@ export class Engine {
     this.running = false;
     this.replayTimer = 0;
     this.countdownLast = 4;
+    this.net = null; // live NetSession (online play), created from the menu
 
     this.renderer.setCameraSettings(this.settings.camera);
     this.renderer.setQuality(this.settings.quality || 'high');
@@ -115,10 +121,13 @@ export class Engine {
 
   startGame(config) {
     this.audio.resume();
+    const online = !!(config.net && config.net.online);
+    const mySeat = online && config.roster ? config.roster[config.net.seat] : null;
     this.config = {
       ...config,
-      playerName: this.settings.playerName,
-      arena: this.settings.arena || 'stadium',
+      playerName: online ? (mySeat ? mySeat.name : this.settings.playerName) : this.settings.playerName,
+      // an online match is played in the host's arena, with the host's rules
+      arena: (online ? config.arena : null) || this.settings.arena || 'stadium',
       loadout: this.settings.loadout,
       // training packs always run on standard rules; matches honour the mutators
       mutators: config.mode === 'drill' ? {} : config.mutators || this.settings.mutators,
@@ -126,6 +135,7 @@ export class Engine {
     this.clearGaragePreview();
     this.renderer.setArenaTheme(this.config.arena);
     this.game = new Game(this.config);
+    if (online && this.net) this.net.attach(this.game);
     this.coach = new Coach(this.game);
     this.chat = new QuickChat(this.game, this.hud);
     this.chat.enabled = this.settings.quickChat !== false;
@@ -149,7 +159,13 @@ export class Engine {
     }
     if (config.mode === 'match') {
       const rumble = this.game.rumble ? ' · <b>RUMBLE</b> — <b>X</b> uses your item' : '';
-      this.hud.addFeed(`${config.teamSize}v${config.teamSize} vs ${this.game.bots[0]?.skill.name || 'bots'} · <b>1–4</b> quick chat${rumble}`, 5);
+      if (online) {
+        const role = this.config.net.role === 'host' ? 'hosting' : 'joined';
+        const bots = this.game.bots.length ? ` + ${this.game.bots.length} bot${this.game.bots.length > 1 ? 's' : ''}` : '';
+        this.hud.addFeed(`Online ${config.teamSize}v${config.teamSize} — ${role} vs <b>${escapeName(config.peerName || 'your friend')}</b>${bots} · <b>1–4</b> quick chat${rumble}`, 6);
+      } else {
+        this.hud.addFeed(`${config.teamSize}v${config.teamSize} vs ${this.game.bots[0]?.skill.name || 'bots'} · <b>1–4</b> quick chat${rumble}`, 5);
+      }
       const mods = this.game.mutatorSummary;
       if (mods.length) this.hud.addFeed(`Mutators: ${mods.join(' · ')}`, 6);
     }
@@ -161,7 +177,9 @@ export class Engine {
     const g = this.game;
     g.on('goal', (e) => {
       const team = TEAM_NAMES[e.team];
-      const who = e.scorer ? (e.ownGoal ? `${e.scorer.name} (own goal)` : e.scorer.name) : team;
+      // an online peer controls their own display name, and these lines are
+      // rendered as HTML — escape anything that came from the wire
+      const who = e.scorer ? escapeHtml(e.ownGoal ? `${e.scorer.name} (own goal)` : e.scorer.name, 24) : team;
       this.hud.showMessage(`GOAL!<small>${who} · ${Math.round(e.speed * 0.036)} km/h</small>`, e.team === 0 ? 'blue' : 'orange', 3);
       this.hud.addFeed(`<b>${who}</b> scored for ${team}`, 5);
       const scored = g.human ? e.team === g.human.team : true;
@@ -192,11 +210,11 @@ export class Engine {
     g.on('demo', (e) => {
       this.audio.demo();
       this.renderer.burst(e.victim.pos.clone().add({ x: 0, y: 40, z: 0 }), 0xff5533, 60, 1200);
-      this.hud.addFeed(`<b>${e.demolisher.name}</b> demolished ${e.victim.name}`);
+      this.hud.addFeed(`<b>${escapeHtml(e.demolisher.name, 20)}</b> demolished ${escapeHtml(e.victim.name, 20)}`);
       if (e.victim === g.human) this.renderer.kick(40);
     });
     g.on('save', (e) => {
-      this.hud.addFeed(`<b>${e.car.name}</b> ${e.epic ? 'epic save!' : 'save!'}`, 3);
+      this.hud.addFeed(`<b>${escapeHtml(e.car.name, 20)}</b> ${e.epic ? 'epic save!' : 'save!'}`, 3);
       if (e.car === g.human) this.audio.success();
     });
     g.on('stat', (e) => {
@@ -244,6 +262,10 @@ export class Engine {
       this.hud.showMessage(`LEVEL ${e.level}<small>DIFFICULTY UP</small>`, 'blue', 2.5);
       this.audio.goal(true);
     });
+    g.on('netChat', (e) => {
+      this.hud.addChat(e.name, e.team, e.text);
+      if (!e.mine) this.audio.ui();
+    });
     g.on('ended', (e) => {
       this.running = false;
       this.input.enabled = false;
@@ -288,7 +310,9 @@ export class Engine {
     list.push({
       date: Date.now(),
       teamSize: this.config.teamSize,
-      difficulty: this.config.difficulty,
+      difficulty: this.config.online ? 'online' : this.config.difficulty,
+      online: !!this.config.online,
+      peer: this.config.peerName || '',
       score: `${stats.score[h.team]}–${stats.score[1 - h.team]}`,
       won: stats.score[h.team] > stats.score[1 - h.team],
       draw: stats.score[0] === stats.score[1],
@@ -306,6 +330,7 @@ export class Engine {
   forfeit() {
     const g = this.game;
     if (!g || g.state === 'ended') return this.quitToMenu();
+    if (g.net) return this.netLeave();
     if (g.human && g.score[g.human.team] >= g.score[1 - g.human.team]) g.score[1 - g.human.team] = g.score[g.human.team] + 1;
     g.forfeited = true;
     this.ui({ type: 'hide' });
@@ -320,6 +345,13 @@ export class Engine {
   }
   pause() {
     if (!this.game) return;
+    if (this.game.net) {
+      // Online: the match cannot be paused — your friend is still playing.
+      // Only your input is taken away, exactly like a menu overlay in RL.
+      this.input.enabled = false;
+      this.ui({ type: 'pause', online: true });
+      return;
+    }
     this.game.paused = true;
     this.input.enabled = false;
     this.ui({ type: 'pause' });
@@ -331,10 +363,13 @@ export class Engine {
     this.input.enabled = true;
     this.lastTime = performance.now();
   }
+  /** Online: "restart" makes no sense — the host owns the match. Go to the lobby. */
   restart() {
+    if (this.config && this.config.net && this.config.net.online) return this.netToLobby();
     this.startGame(this.config);
   }
   quitToMenu() {
+    this.netClose();
     if (this.game && this.game.drill && this.game.drill.attempts > 0) {
       const drill = this.game.drill;
       const cfg = this.config;
@@ -348,6 +383,104 @@ export class Engine {
     this.running = false;
     this.hud.setVisible(false);
     this.ui({ type: 'menu' });
+  }
+
+  // ===========================================================================
+  // Online (peer-to-peer). No servers: the two browsers are wired together with
+  // a hand-exchanged code (see net/sdp.js) over plain WebRTC + public STUN.
+  // ===========================================================================
+  /** Create a fresh session. `role` is 'host' or 'guest'. */
+  netCreate(role) {
+    this.netClose();
+    const conn = new P2PConnection({ role });
+    const session = new NetSession({
+      role,
+      connection: conn,
+      name: this.settings.playerName || 'You',
+      loadout: this.settings.loadout,
+      onStart: (config) => {
+        // both peers land here: the host right after "Start match", the guest
+        // when the host's config arrives
+        this.startGame(config);
+      },
+      onLobby: () => {
+        this.audio.ui();
+        if (this.uiOpen) this.onUi && this.onUi({ type: 'multiplayer', step: 'lobby' });
+      },
+      onNotify: (n) => this.hud.addFeed(n.text, 3),
+      onFail: (info) => this.netFailed(info),
+    });
+    this.net = session;
+    return session;
+  }
+
+  /** Host step 1: build the invite code. */
+  netInvite() {
+    return this.net ? this.net.conn.createInvite() : Promise.resolve(null);
+  }
+
+  /** Guest step 1: read the host's invite, produce the reply code. */
+  netAcceptInvite(code) {
+    return this.net ? this.net.conn.acceptInvite(code) : Promise.resolve({ error: 'No session.' });
+  }
+
+  /** Host step 2: read the guest's reply and finish the handshake. */
+  netAcceptReply(code) {
+    return this.net ? this.net.conn.acceptReply(code) : Promise.resolve({ error: 'No session.' });
+  }
+
+  /** Host: send the rules over and kick off the match on both peers. */
+  netStart(opts) {
+    if (!this.net) return null;
+    this.net.me.name = this.settings.playerName || 'You';
+    this.net.me.loadout = this.settings.loadout;
+    return this.net.startMatch(opts);
+  }
+
+  /** Connection lost / refused. The message shown here is verbatim. */
+  netFailed(info) {
+    const message = info && info.message ? info.message : P2P_FAIL_MESSAGE;
+    if (this.game) {
+      this.game.paused = true;
+      this.running = false;
+      this.input.enabled = false;
+    }
+    this.audio.fail ? this.audio.fail() : this.audio.ui();
+    this.ui({ type: 'netError', message, code: info && info.code, wasPlaying: !!(info && info.wasPlaying), verbatim: P2P_FAIL_MESSAGE });
+  }
+
+  /** Leave the match but keep the link, so you can immediately rematch. */
+  netToLobby() {
+    const s = this.net;
+    this.game = null;
+    this.running = false;
+    this.hud.setVisible(false);
+    if (s) {
+      s.returnToLobby();
+      this.ui({ type: 'multiplayer', step: 'lobby' });
+      return;
+    }
+    this.ui({ type: 'menu' });
+  }
+
+  /** Hang up: close the peer connection and go back to the main menu. */
+  netLeave() {
+    this.netClose();
+    this.game = null;
+    this.running = false;
+    this.hud.setVisible(false);
+    this.ui({ type: 'menu' });
+  }
+
+  netClose() {
+    if (!this.net) return;
+    const s = this.net;
+    this.net = null;
+    try {
+      s.destroy();
+    } catch (e) {
+      /* the connection is already gone */
+    }
   }
 
   loop(now) {
@@ -402,6 +535,12 @@ export class Engine {
       this.audio.updateEngine(null, dt);
     }
   }
+}
+
+/** Player names travel over the wire and end up in the HTML feed: never trust them. */
+/** Escape a name that came off the network (see hudStore.escapeHtml). */
+export function escapeName(name) {
+  return escapeHtml(name, 16);
 }
 
 // A minimal stand-in game object so the renderer can draw the arena behind the menu

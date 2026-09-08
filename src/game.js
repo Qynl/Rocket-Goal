@@ -88,13 +88,23 @@ export class Game {
     this.touchLog = [];
     this.matchStats = { possession: [0, 0], shots: [0, 0], saves: [0, 0], demos: [0, 0], humanBehindBall: 0, humanTime: 0, humanOwnHalf: 0 };
     this.drill = null;
+    // ---- online (peer-to-peer) -------------------------------------------
+    // `net` is a NetSession; the host runs the whole simulation and streams
+    // snapshots, the guest predicts its own car and interpolates the rest.
+    this.net = null;
+    this.netRole = config.net && config.net.online ? config.net.role : null;
+    this.isGuest = this.netRole === 'guest';
+    this.netLost = false;
+    this.netStalled = false;
     // rolling replay buffer (last ~6 s at 30 fps) for goal replays
     this.replayFrames = [];
     this.replay = null; // { frames, t, duration } while a replay plays
     this.replayDelay = 0;
 
     this.setupTeams();
-    // Rumble: power-ups for everyone, boost is free (mutators already unlocked it)
+    // Rumble: power-ups for everyone, boost is free (mutators already unlocked it).
+    // On a guest the items are host-authoritative — the object exists so the HUD
+    // can read the meter, but it is never stepped locally.
     if (this.mutators.rumble !== 'none' && config.mode !== 'drill') {
       this.rumble = new Rumble(this, this.mutators.rumbleCooldown);
     }
@@ -109,6 +119,12 @@ export class Game {
       this.clock = Infinity;
       this.human.setPose(0, -4000, 0, 100);
       this.ball.reset();
+    } else if (this.isGuest) {
+      // a guest never invents a kickoff: positions, score and clock all arrive
+      // with the first snapshots from the host
+      this.state = 'countdown';
+      this.stateTimer = KICKOFF_COUNTDOWN;
+      this.ball.frozen = true;
     } else {
       this.setupKickoff();
     }
@@ -128,6 +144,8 @@ export class Game {
   /** Fire the Rumble power-up a car is holding (no-op when Rumble is off). */
   useItem(car) {
     if (!this.rumble || !car || car.demolished) return null;
+    // online: the host decides. The guest's item button travels as an input bit.
+    if (this.isGuest) return null;
     return this.rumble.use(car);
   }
 
@@ -142,6 +160,9 @@ export class Game {
 
   setupTeams() {
     const cfg = this.config;
+    // Online matches are built from the seat list the host sent, so car order —
+    // and every index on the wire — is identical on both peers.
+    if (cfg.roster) return this.setupRosterTeams();
     const size = cfg.mode === 'freeplay' ? 1 : cfg.teamSize ?? 1;
     const humanTeam = cfg.humanTeam ?? TEAM.BLUE;
     const skill = SKILLS[cfg.difficulty] || SKILLS.allstar;
@@ -165,11 +186,43 @@ export class Game {
       }
     }
     this.applyCarTuning();
+    this.cars.forEach((c, i) => {
+      if (c.netIdx === undefined) c.netIdx = i;
+    });
     if (cfg.mode === 'drill' && cfg.drillBots === false) {
       // drills without bots
       this.bots.length = 0;
       this.cars = this.cars.filter((c) => !c.isBot);
+      this.cars.forEach((c, i) => (c.netIdx = i));
     }
+  }
+
+  /**
+   * Online seat list -> cars. Both peers run this with the same roster, so the
+   * car array (and therefore every index used by the protocol) lines up.
+   * A guest creates the cars but no Bot brains: the host drives them all.
+   */
+  setupRosterTeams() {
+    const cfg = this.config;
+    const seat = cfg.net ? cfg.net.seat : 0;
+    const skill = SKILLS[cfg.difficulty] || SKILLS.allstar;
+    const localTeam = cfg.roster[seat] ? cfg.roster[seat].team : TEAM.BLUE;
+    cfg.roster.forEach((s, i) => {
+      const local = i === seat;
+      const spec = s.bot
+        ? botSpec(s.team, s.botIndex || 0)
+        : { primary: s.team === TEAM.BLUE ? 0x2a6cff : 0xff8a1f, ...(s.loadout || {}) };
+      const car = new Car(s.team, s.name || (s.bot ? 'Bot' : 'Player'), !!s.bot, spec);
+      car.netIdx = i;
+      car.isRemote = !local && !s.bot;
+      car.isOnlineHuman = !s.bot;
+      car.seatPeer = s.peer || null;
+      this.cars.push(car);
+      if (local) this.human = car;
+      else if (s.bot && !this.isGuest) this.bots.push(new Bot(car, this, skill, s.team === localTeam ? cfg.teammateSkill || skill : skill));
+    });
+    if (!this.human) this.human = this.cars[seat] || this.cars[0] || null;
+    this.applyCarTuning();
   }
 
   setupKickoff() {
@@ -209,6 +262,12 @@ export class Game {
   update(dt) {
     if (this.paused) return;
     dt = Math.min(dt, 0.1) * this.timeScale;
+    if (this.net) {
+      // drain the wire first: inputs (host) / snapshots (guest) are ready before
+      // this frame's steps run
+      this.net.frame(this, dt);
+      if (this.isGuest) return this.guestUpdate(dt);
+    }
     this.accumulator += dt;
     let steps = 0;
     while (this.accumulator >= PHYSICS_DT && steps < 16) {
@@ -216,6 +275,28 @@ export class Game {
       this.accumulator -= PHYSICS_DT;
       steps++;
     }
+  }
+
+  /**
+   * Guest side of an online match: no bots, no authoritative ball, no goals —
+   * just local prediction of my own car plus whatever the host says about
+   * everything else. See net/session.js for the reconciliation.
+   */
+  guestUpdate(dt) {
+    this.accumulator += dt;
+    let steps = 0;
+    while (this.accumulator >= PHYSICS_DT && steps < 16) {
+      this.time = this.net ? this.net.hostTime() : this.time + PHYSICS_DT;
+      this.net.guestStep(this, PHYSICS_DT);
+      this.accumulator -= PHYSICS_DT;
+      steps++;
+    }
+    if (this.frame % 4 === 0 || this.predictionDirty) {
+      this.prediction = this.ball.predict(6, 1 / 30);
+      this.predictionAge = 0;
+      this.predictionDirty = false;
+    }
+    this.net.guestEndFrame(this, dt);
   }
 
   fixedStep(dt) {
@@ -291,6 +372,9 @@ export class Game {
       }
       b.update(dt);
     }
+
+    // --- online: apply the remote player's per-step inputs ------------------
+    if (this.net && !this.isGuest) this.net.applyHostInputs(this);
 
     // --- cars ---
     for (const c of this.cars) {
@@ -385,6 +469,9 @@ export class Game {
     if (this.drill && Math.abs(this.ball.pos.z) > ARENA.HALF_LENGTH + BALL.RADIUS) {
       this.drill.onBallInGoal(this.ball.pos.z > 0 ? TEAM.ORANGE : TEAM.BLUE);
     }
+
+    // --- online: stream the authoritative world to the guest ----------------
+    if (this.net && !this.isGuest) this.net.afterHostStep(this, dt);
   }
 
   ballTouchedRecently(sec) {

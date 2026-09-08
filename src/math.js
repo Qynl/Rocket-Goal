@@ -4,6 +4,11 @@ export const V3 = (x = 0, y = 0, z = 0) => new THREE.Vector3(x, y, z);
 export const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
 export const clamp01 = (v) => Math.max(0, Math.min(1, v));
 export const lerp = (a, b, t) => a + (b - a) * t;
+/** Hermite ramp from 0 at `a` to 1 at `b` — the JS twin of GLSL smoothstep. */
+export function smoothstep(a, b, x) {
+  const t = Math.max(0, Math.min(1, (x - a) / (b - a || 1e-6)));
+  return t * t * (3 - 2 * t);
+}
 export const sign = (v) => (v < 0 ? -1 : 1);
 export const rand = (a, b) => a + Math.random() * (b - a);
 export const randSign = () => (Math.random() < 0.5 ? -1 : 1);

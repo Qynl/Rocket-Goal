@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { CAR } from '../constants.js';
 import { resolveSpec } from '../cars.js';
+import { carBlobTexture } from './textures.js';
 
 /**
  * Car meshes built from the car's real hitbox dimensions, so a Batmobile looks
@@ -413,14 +414,22 @@ export function buildCarMesh(spec, isHuman = false, teamColor = 0x2a6cff) {
     wheels.push({ pivot, spin, front });
   });
 
-  // underglow (bright for the human car, subtle for bots so teams read fast)
-  const underglow = new THREE.Mesh(
-    new THREE.PlaneGeometry(h.x * 3.1, h.z * 2.6),
-    new THREE.MeshBasicMaterial({ color: teamColor, transparent: true, opacity: isHuman ? 0.5 : 0.22, depthWrite: false, blending: THREE.AdditiveBlending, toneMapped: false })
+  // Ground blob: contact shadow + team glow in one soft quad.
+  //
+  // It is deliberately NOT a child of the car group. Parented to the chassis it
+  // tilts with every jump and hangs in mid-air during an aerial, which reads as
+  // a coloured slab stuck under the car rather than light on the floor. The
+  // renderer projects this onto the ground each frame and fades it with height.
+  // The texture is a black core fading into a white ring, so the material colour
+  // tints only the ring: one quad, one normal-blended draw, no additive glare.
+  const glow = new THREE.Mesh(
+    new THREE.PlaneGeometry(1, 1),
+    new THREE.MeshBasicMaterial({ map: carBlobTexture(), color: teamColor, transparent: true, opacity: 0, depthWrite: false, toneMapped: false })
   );
-  underglow.rotation.x = -Math.PI / 2;
-  underglow.position.set(0, -CAR.REST_HEIGHT + 2.2, o.z);
-  g.add(underglow);
+  glow.rotation.x = -Math.PI / 2;
+  glow.renderOrder = 2;
+  glow.visible = false;
+  glow.userData = { base: isHuman ? 1 : 0.62, w: h.x * 5.4, l: h.z * 4.6 };
 
   // hitbox outline (debug)
   const hitbox = new THREE.LineSegments(new THREE.EdgesGeometry(new THREE.BoxGeometry(h.x * 2, h.y * 2, h.z * 2)), new THREE.LineBasicMaterial({ color: 0x00ff00 }));
@@ -428,5 +437,5 @@ export function buildCarMesh(spec, isHuman = false, teamColor = 0x2a6cff) {
   hitbox.visible = false;
   g.add(hitbox);
 
-  return { group: g, wheels, flame, flameCore, flameLight, hitbox, paintMat: paint, underglow, brakeMat, trailColor, spec: s };
+  return { group: g, wheels, flame, flameCore, flameLight, hitbox, paintMat: paint, glow, brakeMat, trailColor, spec: s };
 }

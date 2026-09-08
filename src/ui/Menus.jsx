@@ -7,6 +7,8 @@ import { CARS, HITBOXES, PAINT_COLORS, FINISHES, WHEELS, BOOST_TRAILS, GOAL_EXPL
 import { MUTATOR_GROUPS, MUTATOR_PRESETS, describe as describeMutators, defaultMutators } from '../mutators.js';
 import { ARENA_LIST } from '../arenas.js';
 import { loadProfile, rankOf, levelOf, xpIntoLevel, XP_PER_LEVEL } from '../progress.js';
+import { P2P_FAIL_MESSAGE } from '../net/connection.js';
+import { MultiplayerScreen, NetErrorScreen } from './Multiplayer.jsx';
 
 // ---------------------------------------------------------------------------
 function Seg({ label, options, value, onChange }) {
@@ -70,6 +72,7 @@ function MainScreen({ nav, engine }) {
     { icon: '🏟️', title: 'Play match', desc: 'Full match vs bots. 1v1, 2v2 or 3v3, four difficulty tiers, boost pads, overtime, demos, the works.', fn: () => nav({ type: 'matchSetup' }) },
     { icon: '🔧', title: 'Garage', desc: 'Twelve cars across six hitbox classes, paints, finishes, wheels, boost trails and goal explosions.', fn: () => nav({ type: 'garage' }) },
     { icon: '🎓', title: 'Training', desc: 'Seven drills with levels that adapt to you: shooting, saves, aerials, dribbling, kickoffs, wall play, recovery.', fn: () => nav({ type: 'training' }) },
+    { icon: '🌐', title: 'Play online', desc: 'One friend, peer-to-peer over WebRTC — no account, no server. Host a room, swap two codes, play 1v1 (or 2v2/3v3 with bots).', fn: () => nav({ type: 'multiplayer' }) },
     { icon: '🕹️', title: 'Free play', desc: 'Just you and the ball. Press T to reset. Great for warm-ups and mechanics.', fn: () => engine.startGame({ mode: 'freeplay' }) },
     { icon: '📈', title: 'Progress', desc: 'Your rank, XP, training history, accuracy per drill and match results.', fn: () => nav({ type: 'progress' }) },
     { icon: '⚙️', title: 'Settings', desc: 'Controls, camera, audio, coach.', fn: () => nav({ type: 'settings' }) },
@@ -783,19 +786,32 @@ function HowToScreen({ nav, engine }) {
 function PauseScreen({ nav, engine, force }) {
   const g = engine.game;
   const h = g && g.human ? g.human.stats : null;
+  const online = !!(g && g.net);
   const isMatch = g && g.config.mode === 'match' && g.state !== 'ended';
+  const link = online ? g.net.linkInfo() : null;
   return (
     <div className="screen">
       <div className="panel">
-        <h2>Paused</h2>
+        <h2>{online ? 'Menu' : 'Paused'}</h2>
         <div className="row section">
           <button className="primary" onClick={() => engine.resume()}>Resume</button>
-          <button onClick={() => engine.restart()}>Restart</button>
+          {!online && <button onClick={() => engine.restart()}>Restart</button>}
           <button onClick={() => nav({ type: 'settings', fromPause: true })}>Settings</button>
+          {online && (
+            <button onClick={() => engine.netToLobby()}>Leave to lobby</button>
+          )}
           <button className="danger" onClick={() => (isMatch ? engine.forfeit() : engine.quitToMenu())}>
-            {isMatch ? 'Forfeit' : 'Quit to menu'}
+            {isMatch ? (online ? 'Leave match' : 'Forfeit') : 'Quit to menu'}
           </button>
         </div>
+        {online && link && (
+          <p className="muted section" style={{ fontSize: 13 }}>
+            <b className={link.quality > 0.7 ? 'good' : link.quality > 0.4 ? 'warn' : 'bad'}>{link.ping} ms</b> to {link.peer || 'your friend'} · you are
+            the {link.role} · remote cars are drawn {link.delay} ms in the past.
+            <br />
+            The match keeps running while this menu is open — your car just sits still. {P2P_FAIL_MESSAGE}.
+          </p>
+        )}
         {h && (
           <>
             <h3 className="section">Your stats so far</h3>
@@ -946,8 +962,16 @@ function ResultsScreen({ nav, engine, stats, report, config, xp }) {
           ))}
         </div>
         <div className="row between section">
-          <button className="ghost" onClick={() => engine.quitToMenu()}>Main menu</button>
-          <button className="primary" onClick={() => engine.startGame(config)}>Rematch</button>
+          <button className="ghost" onClick={() => (config.online ? engine.netLeave() : engine.quitToMenu())}>Main menu</button>
+          {config.online ? (
+            <button className="primary" onClick={() => engine.netToLobby()}>
+              Back to lobby
+            </button>
+          ) : (
+            <button className="primary" onClick={() => engine.startGame(config)}>
+              Rematch
+            </button>
+          )}
         </div>
       </div>
     </div>
@@ -1005,6 +1029,10 @@ export function Menus({ engine, overlay, nav }) {
       return <MainScreen nav={nav} engine={engine} />;
     case 'matchSetup':
       return <MatchSetupScreen nav={nav} engine={engine} force={force} />;
+    case 'multiplayer':
+      return <MultiplayerScreen nav={nav} engine={engine} step={overlay.step} />;
+    case 'netError':
+      return <NetErrorScreen nav={nav} engine={engine} message={overlay.message} wasPlaying={overlay.wasPlaying} code={overlay.code} />;
     case 'training':
       return <TrainingScreen nav={nav} engine={engine} force={force} />;
     case 'garage':

@@ -7,9 +7,11 @@
     "dev": "vite --host 0.0.0.0",
     "build": "vite build",
     "preview": "vite preview --host 0.0.0.0",
-    "test": "node scripts/uitest.mjs && node scripts/cartest.mjs && node scripts/mutatortest.mjs && node scripts/rumbletest.mjs && node scripts/rendertest.mjs && node scripts/replaytest.mjs",
+    "test": "node scripts/uitest.mjs && node scripts/cartest.mjs && node scripts/mutatortest.mjs && node scripts/rumbletest.mjs && node scripts/nettest.mjs && node scripts/netuitest.mjs && node scripts/trainingtest.mjs && node scripts/rendertest.mjs && node scripts/replaytest.mjs",
     "test:drills": "node scripts/drills.mjs",
-    "sim": "node scripts/sim.mjs"
+    "sim": "node scripts/sim.mjs",
+    "test:net": "node scripts/nettest.mjs && node scripts/netuitest.mjs",
+    "test:training": "node scripts/trainingtest.mjs"
   },
   "dependencies": {
     "react": "^18.3.1",

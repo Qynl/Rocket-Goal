@@ -7,7 +7,8 @@ import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
 import { buildArena } from './arenaMesh.js';
 import { buildCarMesh } from './carMesh.js';
 import { ARENA, BALL, TEAM_COLORS, CAR, BOOST_PAD } from '../constants.js';
-import { clamp, lerp } from '../math.js';
+import { shadowTexture, carBlobTexture, sparkTexture } from './textures.js';
+import { clamp, lerp, smoothstep } from '../math.js';
 import { arenaById } from '../arenas.js';
 
 const _v = new THREE.Vector3();
@@ -108,8 +109,15 @@ export class Renderer {
     // ball
     this.ballMesh = this.buildBall();
     this.scene.add(this.ballMesh);
-    this.ballShadow = new THREE.Mesh(new THREE.CircleGeometry(BALL.RADIUS, 24), new THREE.MeshBasicMaterial({ color: 0x000000, transparent: true, opacity: 0.4, depthWrite: false }));
+    // Soft blob shadow. A flat CircleGeometry reads as a cut-out disc with a
+    // hard edge; the radial texture reads as a shadow, and it is what lets you
+    // judge where an aerial ball is going to land.
+    this.ballShadow = new THREE.Mesh(
+      new THREE.PlaneGeometry(BALL.RADIUS * 3.4, BALL.RADIUS * 3.4),
+      new THREE.MeshBasicMaterial({ map: shadowTexture(), color: 0x000000, transparent: true, opacity: 0.4, depthWrite: false, toneMapped: false })
+    );
     this.ballShadow.rotation.x = -Math.PI / 2;
+    this.ballShadow.renderOrder = 1;
     this.scene.add(this.ballShadow);
     this.ballTrail = this.buildTrail(0xffffff, 40);
     this.scene.add(this.ballTrail.mesh);
@@ -219,6 +227,8 @@ export class Renderer {
     });
     this.arena = buildArena(theme);
     this.scene.add(this.arena.group);
+    // reflections belong to the arena: a day sky must not show up in a night match
+    this.buildEnvironment(theme);
 
     // sky / fog / tone
     this.scene.background = new THREE.Color(theme.sky.top);
@@ -278,6 +288,11 @@ export class Renderer {
     sun.position.set(...t.sun.pos);
     sun.castShadow = true;
     sun.shadow.mapSize.set(4096, 4096);
+    // One box for every arena, sized for the worst case. Fitting it per theme in
+    // light space was measured to be no sharper (and it breaks on the low sun in
+    // Salty Shores, where part of the arena falls behind the near plane), so the
+    // crisp shadow under a car comes from the ground blob instead — that one is
+    // resolution-independent and stays sharp at any distance or quality tier.
     sun.shadow.camera.left = -6500;
     sun.shadow.camera.right = 6500;
     sun.shadow.camera.top = 7500;
@@ -318,16 +333,30 @@ export class Renderer {
     }
   }
 
-  /** Night-stadium reflections for paint/glass/metal (PMREM from a tiny procedural scene). */
-  buildEnvironment() {
+  /**
+   * Reflections for paint/glass/metal: a PMREM pass over a tiny procedural room
+   * built from the *current arena theme*, so a car parked in DFH Day reflects a
+   * bright blue sky and the same car in the Night Stadium reflects floodlights.
+   * Rebuilt on every arena change (cheap enough to do from a menu, far too
+   * expensive to do per frame).
+   */
+  buildEnvironment(theme = this.theme) {
+    if (this.isStub) return;
+    const t = theme || this.theme;
     const envScene = new THREE.Scene();
     const room = new THREE.Mesh(
       new THREE.SphereGeometry(100, 24, 16),
-      new THREE.MeshBasicMaterial({ color: 0x0a1128, side: THREE.BackSide })
+      new THREE.MeshBasicMaterial({ color: t.sky.mid, side: THREE.BackSide })
     );
     envScene.add(room);
+    // horizon band: the bright ring where sky meets the stands
+    const band = new THREE.Mesh(
+      new THREE.SphereGeometry(98, 24, 8, 0, Math.PI * 2, Math.PI * 0.42, Math.PI * 0.16),
+      new THREE.MeshBasicMaterial({ color: t.sky.bottom, side: THREE.BackSide })
+    );
+    envScene.add(band);
     // light panels overhead
-    const panel = new THREE.MeshBasicMaterial({ color: 0xdfe9ff });
+    const panel = new THREE.MeshBasicMaterial({ color: t.lightPanel });
     for (let i = 0; i < 4; i++) {
       const lp = new THREE.Mesh(new THREE.PlaneGeometry(50, 14), panel);
       lp.position.set(Math.cos((i / 4) * Math.PI * 2) * 35, 60, Math.sin((i / 4) * Math.PI * 2) * 35);
@@ -340,16 +369,23 @@ export class Renderer {
       glow.position.set(0, 10, sz * 80);
       envScene.add(glow);
     }
-    // floor bounce
-    const floor = new THREE.Mesh(new THREE.CircleGeometry(90, 24), new THREE.MeshBasicMaterial({ color: 0x27324e }));
+    // floor bounce: the pitch itself is the biggest reflector under a car
+    const floor = new THREE.Mesh(new THREE.CircleGeometry(90, 24), new THREE.MeshBasicMaterial({ color: new THREE.Color(t.field.c1).multiplyScalar(0.55) }));
     floor.rotation.x = -Math.PI / 2;
     floor.position.y = -40;
     envScene.add(floor);
     const pmrem = new THREE.PMREMGenerator(this.renderer);
     const rt = pmrem.fromScene(envScene, 0.04);
+    // drop the previous map before swapping, or arena changes leak GPU memory
+    const prev = this.envRT;
     this.scene.environment = rt.texture;
     this.envRT = rt;
+    if (prev) prev.dispose();
     pmrem.dispose();
+    envScene.traverse((o) => {
+      if (o.geometry) o.geometry.dispose();
+      if (o.material) o.material.dispose();
+    });
   }
 
   // ------------------------------------------------------------------ sky
@@ -781,6 +817,8 @@ export class Renderer {
       this.scene.add(m.trail.mesh);
       m.boostBar = this.makeBoostBar(TEAM_COLORS[car.team]);
       this.scene.add(m.boostBar.sprite);
+      // the ground blob lives in the scene, not on the chassis: see carMesh.js
+      this.scene.add(m.glow);
       m.lastBoostFrame = 0;
       this.carMeshes.set(car.id, m);
     }
@@ -1026,6 +1064,53 @@ export class Renderer {
     return { x, y, onScreen, behind, dist };
   }
 
+  /**
+   * Put a car's ground blob on the floor beneath it.
+   *
+   * The blob is the contact shadow and the team glow at once, and it only ever
+   * belongs on the ground: it is laid flat (never tilted with the chassis),
+   * widened a little as the car rises — light spreads — and faded out with
+   * height so an aerial car does not drag a coloured rectangle through the air.
+   * Boosting brightens it, which is the one place a glow under the car earns
+   * its keep.
+   */
+  placeGroundBlob(m, pos, car, dt) {
+    const g = m.glow;
+    if (!g || !g.userData) return;
+    const ud = g.userData;
+    const floor = this.floorUnder(pos.x, pos.z);
+    if (floor === null) {
+      g.visible = false;
+      return;
+    }
+    const height = Math.max(0, pos.y - floor);
+    // full strength on the ground, gone by ~420 uu up (a jump apex is ~500)
+    const fade = 1 - smoothstep(45, 420, height);
+    if (fade <= 0.01) {
+      g.visible = false;
+      return;
+    }
+    const spread = 1 + Math.min(0.55, height / 900);
+    const boostGlow = car.boostActive ? 1.35 : 1;
+    g.visible = true;
+    g.position.set(pos.x, floor + 1.2, pos.z);
+    g.scale.set(ud.w * spread, ud.l * spread, 1);
+    const want = ud.base * fade * boostGlow;
+    // ease the opacity so a landing or a boost flicker never pops
+    const k = dt > 0 ? 1 - Math.exp(-18 * dt) : 1;
+    g.material.opacity += (want - g.material.opacity) * k;
+  }
+
+  /** Floor height under a world XZ, or null where there is no floor to catch light. */
+  floorUnder(x, z) {
+    const az = Math.abs(z);
+    const ax = Math.abs(x);
+    if (az <= ARENA.HALF_LENGTH) return ax <= ARENA.HALF_WIDTH + 60 ? 0 : null;
+    // inside the goal box the floor continues, but only as wide as the mouth
+    if (az <= ARENA.HALF_LENGTH + ARENA.GOAL_DEPTH) return ax <= ARENA.GOAL_HALF_WIDTH + 40 ? 0 : null;
+    return null;
+  }
+
   applyCarLive(car, view, dt) {
     const m = this.getCarMesh(car);
     m.group.visible = !car.demolished;
@@ -1033,6 +1118,7 @@ export class Renderer {
     m.boostBar.sprite.visible = m.tag.visible;
     if (car.demolished) {
       m.trail.mat.uniforms.opacity.value = 0;
+      m.glow.visible = false;
       return;
     }
     m.group.position.copy(car.pos);
@@ -1079,7 +1165,7 @@ export class Renderer {
       if (ev.wallHit > 400) this.burst(car.pos, 0xffffff, 8, 250, 0.3, 12);
       if (ev.flipReset) this.spawnRing(car.pos, 0x44ffcc, 90);
     }
-    m.underglow.visible = car.onGround || car.boostActive;
+    this.placeGroundBlob(m, m.group.position, car, dt);
     m.hitbox.visible = this.showHitbox;
     // supersonic ribbon trail
     _v.copy(car.pos).add(_v2.set(0, 20, 0));
@@ -1112,7 +1198,7 @@ export class Renderer {
       m.flameLight.intensity = fa.boost ? 7 : 0;
       if (fa.boost && Math.random() < 0.5) this.spawnParticleAt(m.group.position, m.group.quaternion, 'boost');
       m.trail.mat.uniforms.opacity.value = 0;
-      m.underglow.visible = true;
+      this.placeGroundBlob(m, m.group.position, { onGround: true, boostActive: fa.boost, demolished: false }, 0);
     }
   }
 
@@ -1386,7 +1472,9 @@ export class Renderer {
   getParticle() {
     for (const p of this.particles) if (!p.mesh.visible) return p.reset();
     if (this.particles.length < 800) {
-      const mesh = new THREE.Sprite(new THREE.SpriteMaterial({ color: 0xffffff, transparent: true, opacity: 0.9, depthWrite: false, blending: THREE.AdditiveBlending }));
+      // A sprite with no map is a hard white square — confetti, not sparks.
+      // The soft radial texture makes the same quad read as light.
+      const mesh = new THREE.Sprite(new THREE.SpriteMaterial({ map: sparkTexture(), color: 0xffffff, transparent: true, opacity: 0.9, depthWrite: false, blending: THREE.AdditiveBlending }));
       this.scene.add(mesh);
       const p = {
         mesh,

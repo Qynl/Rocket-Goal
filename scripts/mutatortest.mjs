@@ -86,6 +86,11 @@ const run = (g, seconds, drive = true) => {
 {
   const g = mk({ ballSize: 2 });
   ok('gigantic ball mutator scales the ball', Math.abs(g.ball.radius - 185.5) < 0.01);
+  // This one tests ball physics, not goalkeeping. Kickoff spawns are shuffled at
+  // random, so without this the opposing car is parked in the goal mouth about
+  // one run in six and blocks a ball 371 uu across — a coin flip, not a check.
+  g.bots.length = 0;
+  g.cars.forEach((c, i) => c.setPose(i % 2 ? 3600 : -3600, 0, 0, 0));
   g.ball.pos.set(0, 185.5, 4000);
   g.ball.vel.set(0, 0, 2000);
   let scored = false;

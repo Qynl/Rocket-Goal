@@ -181,6 +181,12 @@ export class Input {
   update() {
     const c = this.controls;
     const gp = this.pollGamepad();
+    // Start pauses/resumes even while a menu has taken the controls away
+    if (gp && gp.startPressed && this.onAction) this.onAction('pause');
+    if (!this.enabled) {
+      Object.assign(c, defaultControls());
+      return c;
+    }
     if (gp) {
       if (gp.ballCamPressed) {
         this.ballCam = !this.ballCam;
@@ -203,11 +209,6 @@ export class Input {
       c.useItem = gp.item;
       this.rearView = gp.rearView;
       this.scoreboard = gp.scoreboard;
-      if (gp.startPressed && this.onAction) this.onAction('pause');
-      return c;
-    }
-    if (!this.enabled) {
-      Object.assign(c, defaultControls());
       return c;
     }
     const fwd = this.isDown('throttle') ? 1 : 0;

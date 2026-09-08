@@ -100,6 +100,16 @@ export function Hud({ store }) {
 
       {snap.mutators && snap.mutators.length ? <div className="mutators">{snap.mutators.join(' · ')}</div> : null}
 
+      {snap.net && (
+        <div className={`netinfo q${snap.net.quality > 0.7 ? '3' : snap.net.quality > 0.4 ? '2' : '1'}`} title={`Peer-to-peer · ${snap.net.role === 'host' ? 'hosting' : 'joined'} · remote cars drawn ${snap.net.delay} ms in the past`}>
+          <span className="bars">
+            <i /><i /><i />
+          </span>
+          <b>{snap.net.ping} ms</b>
+          <small>{snap.net.peer}</small>
+        </div>
+      )}
+
       <div className="status" dangerouslySetInnerHTML={{ __html: snap.pills.join(' ') }} />
 
       {snap.item && (

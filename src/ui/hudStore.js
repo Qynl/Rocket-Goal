@@ -2,6 +2,18 @@ import { ARENA, TEAM, CAR } from '../constants.js';
 import { ITEMS } from '../rumble.js';
 
 /**
+ * Escape a string for the HUD's HTML feed. Feed and chat lines are rendered with
+ * dangerouslySetInnerHTML because they carry intentional markup (<b>, <small>),
+ * so every value that originates outside this machine — an online peer's name,
+ * their chat message — has to be neutralised before it is interpolated.
+ */
+export function escapeHtml(value, max = 32) {
+  return String(value == null ? '' : value)
+    .slice(0, max)
+    .replace(/[&<>"']/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[ch]);
+}
+
+/**
  * Framework-agnostic HUD state. The engine writes here every frame; React
  * subscribes for the declarative parts (score, boost, feed, …) and reads
  * `live` imperatively (minimap, ball arrow, vignette) from rAF loops.
@@ -43,6 +55,7 @@ export class HudStore {
       coach: null, // html
       drill: null, // {icon, name, lines, acc, message}
       board: null, // {score, ot, rows}
+      net: null, // {ping, quality, loss, delay, peer, role} while online
       feed: [],
       stats: [],
       chat: [],
@@ -112,7 +125,10 @@ export class HudStore {
   }
 
   addChat(name, team, text, seconds = 5) {
-    this.chatItems.push({ id: this.nextId++, html: `<b class="${team === 0 ? 'blue' : 'orange'}">${name}</b> ${text}`, t: seconds });
+    // Names and chat text can come off the network in an online match, and the
+    // chat line is rendered as HTML — so anything we did not write ourselves is
+    // escaped here, once, for every caller.
+    this.chatItems.push({ id: this.nextId++, html: `<b class="${team === 0 ? 'blue' : 'orange'}">${escapeHtml(name, 20)}</b> ${escapeHtml(text, 140)}`, t: seconds });
     while (this.chatItems.length > 4) this.chatItems.shift();
     this.dirty = true;
   }
@@ -200,6 +216,19 @@ export class HudStore {
       } else if (snap.item) snap.item = null;
       this.live.vignette = human.supersonic ? 0.55 : human.boostActive ? 0.25 : 0;
     }
+    // online: connection read-out, refreshed 4x a second (React sees it at 30 Hz)
+    if (game.net && game.net.phase === 'playing') {
+      this.netAccum = (this.netAccum || 0) + dt;
+      if (this.netAccum > 0.25) {
+        this.netAccum = 0;
+        snap.net = game.net.linkInfo();
+        this.dirty = true;
+      }
+    } else if (snap.net) {
+      snap.net = null;
+      this.dirty = true;
+    }
+
     if (this._mutGame !== game) {
       this._mutGame = game;
       snap.mutators = game.mutatorSummary || [];
